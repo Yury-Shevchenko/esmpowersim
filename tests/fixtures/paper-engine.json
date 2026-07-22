@@ -1,0 +1,49 @@
+{
+  "_comment": [
+    "Golden values from the PAPER'S environment — the yardstick for the tool's",
+    "'same engine as the preregistered simulation study' claim.",
+    "",
+    "Measured 2026-07-15 on the machine that produced the confirmatory run, in the",
+    "exact pinned environment recorded in repro/versions.tsv:",
+    "  R 4.3.1 · lme4 1.1-34 · Matrix 1.6-1 · MASS 7.3-60 · nlme 3.1-162",
+    "  BLAS libRblas.0.dylib · LAPACK 3.11.0 (reference, not Accelerate)",
+    "",
+    "Why fixtures and not a live native run: the local R has since moved to 4.6.1,",
+    "and current-native DIVERGES from the paper's environment at the sparse corner",
+    "(conv_rate 0.560 vs 0.570) even at the same lme4 version — the numerical",
+    "environment, not the package version, moves the marginal fits. So a live",
+    "native run is not a stable reference. These recorded numbers are.",
+    "",
+    "Regenerate ONLY from a restored R 4.3.1 + repro/versions.tsv environment",
+    "(or the Dockerfile, which pins exactly that). Do not regenerate from whatever",
+    "R happens to be installed — that would silently redefine the claim."
+  ],
+  "environment": {
+    "R": "4.3.1",
+    "lme4": "1.1-34",
+    "Matrix": "1.6-1",
+    "MASS": "7.3-60",
+    "nlme": "3.1-162",
+    "BLAS": "libRblas.0.dylib (reference)",
+    "LAPACK": "3.11.0"
+  },
+  "seed": 20260709,
+  "cells": [
+    {
+      "label": "sparse  N=20 D=7  rate=1",
+      "note": "the sparse corner: convergence is marginal here, which makes it the sensitive case for H4 and the one that catches numerical drift",
+      "design": { "N": 20, "D": 7, "lambda_bar": 1, "cv": 0.5, "cap": "Inf", "compliance": 0.75,
+                  "decay": 0, "phi": 0.3, "beta1": 0.2, "trigger_link": 0 },
+      "R": 100,
+      "expected": { "power": 0.192982, "mcse_power": 0.052271, "conv_rate": 0.570000, "mean_n": 5.245000 }
+    },
+    {
+      "label": "typical N=60 D=14 rate=2",
+      "note": "a comfortably-converging design; matches across every environment tested so far",
+      "design": { "N": 60, "D": 14, "lambda_bar": 2, "cv": 0.5, "cap": "Inf", "compliance": 0.75,
+                  "decay": 0, "phi": 0.3, "beta1": 0.2, "trigger_link": 0 },
+      "R": 100,
+      "expected": { "power": 0.960000, "mcse_power": 0.019596, "conv_rate": 1.000000, "mean_n": 20.917667 }
+    }
+  ]
+}

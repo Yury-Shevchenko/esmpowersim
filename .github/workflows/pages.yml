@@ -1,0 +1,107 @@
+# =============================================================================
+# Build the static planner and publish it to GitHub Pages.
+#
+# NOT ACTIVE YET. GitHub only reads workflows from `.github/workflows/` at the
+# repo root, and this tree currently lives inside the private vault. On
+# extraction to the public `esmpowersim` repo (plan Phase 3) this file becomes
+# `.github/workflows/pages.yml` unchanged. It lives here so it is reviewable
+# before the repo exists.
+#
+# WHY R 4.6 AND NOT THE PAPER'S 4.3.1 — the non-obvious part:
+# shinylive resolves each WebAssembly binary by matching the LOCAL package's
+# major.minor. Built from the paper's pinned environment (R 4.3.1 / Matrix
+# 1.6-1 / lme4 1.1-34), MASS and Matrix silently resolve to nothing, ship as
+# EMPTY directories, and the published app 404s at runtime with
+# "package 'Matrix' required by 'lme4' could not be found" — an export-time
+# *warning* only. R 4.3.1 cannot fix it: Matrix 1.7-5 and MASS 7.3-65 both
+# require R >= 4.4. So the build environment MUST differ from the paper's, and
+# the packages MUST float to whatever repo.r-wasm.org currently serves.
+#
+# That divergence is safe only because `npm run test:repro` checks the shipped
+# wasm engine against the paper's recorded numbers on every push. If that test
+# fails, the tool's "same engine as the preregistered study" claim is false and
+# the manuscript wording changes — so the deploy is gated on it.
+# =============================================================================
+name: build & publish planner
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  # Gate 1: the shipped wasm engine must still reproduce the paper's numbers.
+  reproducibility:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: r-lib/actions/setup-r@v2
+        with:
+          r-version: 'release'          # >= 4.4; see header
+          use-public-rspm: true
+      - name: Install the engine's native deps (for the informational native run)
+        run: Rscript -e 'install.packages(c("lme4","MASS","nlme"))'
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'npm' }
+      - run: npm ci
+      - name: wasm engine vs the paper's recorded engine
+        run: npm run test:repro
+
+  # Gate 2: the lookup layer returns the grid verbatim, and the app's fixed-mode
+  # reactive wiring holds (the race that only showed in the browser).
+  lookup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: r-lib/actions/setup-r@v2
+        with: { r-version: 'release', use-public-rspm: true }
+      - name: Install R deps (lme4 for the engine, shiny for testServer)
+        run: Rscript -e 'install.packages(c("lme4","MASS","nlme","shiny"))'
+      - run: Rscript tools/build-app.R
+      - run: Rscript tests/test-lookup.R
+      - run: Rscript tests/app-fixed.R
+      - run: Rscript tests/app-roundtrip.R
+      - run: Rscript tests/app-grid-snap.R
+
+  build:
+    needs: [reproducibility, lookup]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: r-lib/actions/setup-r@v2
+        with: { r-version: 'release', use-public-rspm: true }
+      - name: Install build deps
+        # Deliberately unpinned: shinylive matches these against the wasm repo.
+        run: Rscript -e 'install.packages(c("shiny","shinylive","lme4","MASS","nlme"))'
+      - name: Assemble the appdir (explicit allowlist + leak scan)
+        run: Rscript tools/build-app.R
+      - name: Export the static bundle
+        run: Rscript -e 'shinylive::export("app", "docs")'
+      - name: Add the first-load splash to index.html
+        run: Rscript tools/inject-splash.R
+      - name: Serve the planner at power.smaat.eu
+        # A custom domain needs a CNAME file inside the published artifact, and
+        # its own origin is what makes shinylive's service worker work without
+        # any cross-origin iframe gymnastics.
+        run: echo 'power.smaat.eu' > docs/CNAME
+      - uses: actions/upload-pages-artifact@v3
+        with: { path: docs }
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
