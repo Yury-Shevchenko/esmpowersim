@@ -1,0 +1,31 @@
+cff-version: 1.2.0
+title: "esmpowersim: power and design planning for event- and location-contingent experience sampling"
+message: "If you use this software, please cite it using these metadata."
+type: software
+authors:
+  - given-names: Yury
+    family-names: Shevchenko
+    orcid: "https://orcid.org/0000-0002-3397-8465"
+    affiliation: "University of Konstanz"
+repository-code: "https://github.com/Yury-Shevchenko/esmpowersim"
+url: "https://power.smaat.eu"
+license: MIT
+version: 0.1.0
+abstract: >-
+  Simulation-based power and design planning for intensive longitudinal (ESM/EMA) studies in which
+  assessments are triggered by events or by entry to a geofenced place, so that each participant's
+  number of observations is a random variable rather than a planned quantity. Implements a generative
+  trigger process with between-person variation in trigger rate, per-day caps, compliance and fatigue,
+  and optional context-linked (endogenous) triggering; fits the multilevel AR(1) model class used by
+  Lafit et al. (2021) PowerAnalysisIL and reports power, precision, Type-S/Type-M error, model
+  convergence, and the distribution of effective observations per person. Ships a companion planning
+  tool that answers instantly from the preregistered simulation grid and can run the engine live in
+  the browser via WebAssembly.
+keywords:
+  - experience sampling
+  - ecological momentary assessment
+  - statistical power
+  - multilevel models
+  - geofencing
+  - intensive longitudinal data
+  - research design
