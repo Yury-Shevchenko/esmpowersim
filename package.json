@@ -1,0 +1,13 @@
+{
+  "name": "esmpowersim-tests",
+  "private": true,
+  "type": "module",
+  "description": "Reproducibility harness: does the wasm engine still match the paper's native engine?",
+  "scripts": {
+    "test:repro": "node tests/wasm-vs-native.mjs"
+  },
+  "dependencies": {
+    "webr": "^0.6.0",
+    "ws": "^8.18.0"
+  }
+}

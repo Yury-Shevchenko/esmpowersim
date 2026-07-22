@@ -1,0 +1,25 @@
+Package: esmpowersim
+Title: Power and Design Simulation for Event- and Location-Contingent Experience Sampling
+Version: 0.1.0
+Authors@R:
+    person("Yury", "Shevchenko", role = c("aut", "cre"),
+           comment = c(ORCID = "0000-0002-3397-8465"))
+Description: Reproducible simulator and design-planning tool for intensive
+    longitudinal (ESM/EMA) studies in which the number of observations per
+    person is a random variable driven by an event- or geofence-triggered
+    sampling process. Implements the preregistered data-generating mechanism,
+    fits the multilevel AR(1) model class, and reports power, precision,
+    Type-S/Type-M error, convergence, and the distribution of effective
+    observations per person. Companion to the methods paper.
+License: MIT + file LICENSE
+Encoding: UTF-8
+Depends:
+    R (>= 4.3.1)
+Imports:
+    lme4 (>= 1.1.34),
+    MASS (>= 7.3.60),
+    Matrix (>= 1.6.1),
+    nlme (>= 3.1.162)
+Suggests:
+    shiny (>= 1.8.0)
+NeedsCompilation: no

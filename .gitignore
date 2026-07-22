@@ -1,0 +1,21 @@
+results/
+*.csv
+
+# The confirmatory snapshot is a DATA RELEASE, not scratch output — track it
+# despite the blanket *.csv rule above.
+!results-confirmatory/*.csv
+
+# app/ is the shinylive appdir. Only app/app.R is source; everything else under
+# it is assembled by tools/build-app.R from an explicit allowlist, so the engine
+# has exactly one home (R/) and cannot drift into a stale second copy.
+# Rebuild with:  Rscript tools/build-app.R
+app/R/
+app/grid/
+
+# shinylive export output
+docs/
+site/
+
+# reproducibility-test deps (webr is ~169 MB). package-lock.json IS committed so
+# `npm ci` in CI resolves the exact same webr build the test was written against.
+node_modules/
