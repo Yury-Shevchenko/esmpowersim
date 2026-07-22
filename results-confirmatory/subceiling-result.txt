@@ -1,0 +1,34 @@
+Sub-ceiling follow-up — prospectively preregistered confirmatory test
+=====================================================================
+
+Registration (prospective)  OSF osf.io/r8m2q
+Parent (post-hoc)           OSF osf.io/a5jdb
+Code, staged before the run github.com/Yury-Shevchenko/esmpowersim @ tag
+                            prereg-subceiling (commit e362cc9, 2026-07-22 07:25 UTC)
+Run                         2026-07-22 07:39 -> 08:30 UTC (50.6 min, 7 cores)
+                            grid=subceiling, R=2000, seed=20260722
+                            96 cells fully factorial: N{20,40,60,90} x lambda_bar{1,2}
+                            x D{7,14} x beta1{0.10,0.15} x cv{0.3,0.6,0.9}
+Reproduce                   Rscript tools/subceiling-analysis.R
+
+Registered hypothesis
+  In the sub-ceiling regime, holding expected total observations constant, higher
+  between-person CV in trigger rate reduces power. CONFIRMED iff BOTH criteria hold.
+
+Result
+  Criterion 1 (reliability): empirical-logit(power_all) ~ cv + N + lambda_bar + D
+    + beta1.  CV coefficient = -0.157, 95% CI [-0.430, 0.117].
+    Negative AND CI upper < 0 ?  NO  (CI includes 0).
+  Criterion 2 (magnitude, informative band): among the 20/32 matched pairs whose
+    cv=0.3 power is in [0.2,0.8], median power gap [power(.9)-power(.3)] = -0.050.
+    <= -0.03 ?  YES.
+  Secondary dose-response: power non-increasing across cv in 21/32 cells (66%).
+
+VERDICT: NOT CONFIRMED.
+  The penalty's MAGNITUDE criterion was met (median -5.0 pts in the informative
+  band, consistent with the parent study's exploratory -4.2 pts), but the
+  RELIABILITY criterion was not: the pooled logit-regression CV coefficient,
+  though negative, had a 95% CI crossing zero. Because confirmation required
+  both, the hypothesis is not confirmed. The direction and size of the effect
+  are consistent with a real but modest sub-ceiling penalty that this focused
+  96-cell, R=2000 test could not establish as statistically reliable.
