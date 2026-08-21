@@ -34,6 +34,50 @@ PR <- G$cells[G$cells$grid == "primary", ]
 LV <- list(N = range(PR$N), D = sort(unique(PR$D)),
            lambda = sort(unique(PR$lambda_bar)), cv = sort(unique(PR$cv)))
 
+# --- what the shipped table can answer instantly -----------------------------
+# Read from the grid, never hardcoded: the table is filled slab by slab, so the
+# UI must degrade honestly on a partially-built one rather than promise coverage
+# that is not there. Adding a slab to results-tool/ and rebuilding is all it
+# takes for the corresponding model or schedule to become instant.
+PARTS <- unique(G$cells[, c("model", "trigger_mode")])
+has_slab <- function(model, trigger_mode)
+  any(PARTS$model == as.integer(model) & PARTS$trigger_mode == trigger_mode)
+
+# The simulated levels of the base slab for a partition. These differ by design:
+# a planned schedule saturates far earlier than a triggered one, so its grid
+# reaches down to 3-day bursts and up to 8 prompts/day instead of 7-28 days at
+# 1-4 triggers/day. Snapping a slider to the wrong partition's levels would miss
+# every lookup, so the sliders are always built from the partition in play.
+levels_for <- function(model, trigger_mode) {
+  b <- G$cells[G$cells$model == as.integer(model) &
+               G$cells$trigger_mode == trigger_mode &
+               G$cells$grid == base_slab_name(model, trigger_mode), ]
+  if (!nrow(b)) return(NULL)
+  list(N = range(b$N), D = sort(unique(b$D)),
+       lambda = sort(unique(b$lambda_bar)), cv = sort(unique(b$cv)))
+}
+
+# The effect the partition was simulated at, for the coefficient this model
+# powers. The slider defaults here so the common case is an exact grid hit;
+# move it and the lookup refuses (correctly) and offers a live run.
+# Replications behind a partition's base slab. The study grid ran at R = 2000 and
+# the tool-support slabs at R = 1000, so the precision the UI claims has to be
+# read from the data rather than written into the copy.
+slab_R <- function(model, trigger_mode) {
+  b <- G$cells[G$cells$model == as.integer(model) &
+               G$cells$trigger_mode == trigger_mode &
+               G$cells$grid == base_slab_name(model, trigger_mode), ]
+  if (!nrow(b)) NA_integer_ else as.integer(b$R_total[1])
+}
+
+ref_effect <- function(model, trigger_mode) {
+  r <- G$refs[[partition_key(model, trigger_mode)]]
+  if (is.null(r)) return(NULL)
+  sp <- model_spec(model)
+  list(eff    = switch(sp$target, b10 = r$beta1, b01 = r$beta_l2, b11 = r$beta_cross),
+       b_main = r$beta1, b_l2 = r$beta_l2)
+}
+
 `%||%` <- function(a, b) if (is.null(a) || (length(a) == 1 && is.na(a))) b else a
 nearest <- function(x, lv) if (is.null(x)) NULL else lv[which.min(abs(as.numeric(x) - lv))]
 
@@ -165,8 +209,8 @@ ui <- fluidPage(
       checkboxInput("show_advanced",
         "Show advanced options (compliance, fatigue, caps, carry-over, exact simulation)", FALSE),
       conditionalPanel("input.show_advanced",
-        # Grid vs live only matters for the paper's model on a triggered schedule.
-        conditionalPanel("input.design_type != 'fixed' && input.q_category == 'within' && input.m_within == '3'",
+        # Grid vs live is a real choice only where a precomputed slab exists.
+        conditionalPanel("output.js_grid_capable === true",
           radioButtons("engine", "How to answer",
             c("Look up the simulated grid (instant)" = "lookup",
               "Simulate my exact design (slower, exact)" = "simulate"))),
@@ -181,10 +225,10 @@ ui <- fluidPage(
       uiOutput("lever_status"),
 
       # ===== Run (live simulation only) =====================================
-      # Duplicates sim_mode() as a JS expression (a client condition can't call the
-      # server): any model but the grid-backed within-person + a triggered design.
+      # Reads sim_mode() itself rather than re-deriving it from input ids, so the
+      # button appears exactly when the grid cannot answer.
       conditionalPanel(
-        "input.design_type == 'fixed' || input.q_category != 'within' || input.m_within != '3' || (input.show_advanced && input.engine == 'simulate')",
+        "output.js_sim_mode === true",
         hr(),
         conditionalPanel("input.show_advanced",
           sliderInput("R", "Monte Carlo replications", 30, 500, 100, step = 10),
@@ -244,15 +288,36 @@ server <- function(input, output, session) {
   output$design_inputs <- renderUI({
     if (identical(input$design_type, "fixed")) {
       # A planned schedule has no rate distribution and no between-person rate
-      # variation to model, so cv is not shown — it does not apply. Free sliders,
-      # because the grid never simulated this design: every answer is a live run.
-      tagList(
-        sliderInput("lambda_bar", "Prompts per day (planned)", 1, 8, 3, step = 1),
-        sliderInput("D", "Duration (days)", 3, 60, 14, step = 1),
-        helpText("Everyone is scheduled the same number of prompts. Compliance and ",
-                 "fatigue below still thin them, so the realised count is ",
-                 tags$b("Binomial"), " — random, but around a planned maximum. That ",
-                 "missingness is the part PowerAnalysisIL does not model."))
+      # variation to model, so cv is not shown — it does not apply.
+      lv <- if (grid_backed()) levels_for(model_id(), "fixed") else NULL
+      if (!is.null(lv)) {
+        # Grid-backed: step the sliders onto the simulated levels, exactly as the
+        # triggered case does, so each stop is an exact lookup rather than a
+        # refusal. The levels are the fixed slab's own — a planned schedule
+        # saturates early, so they run shorter and denser than the triggered set.
+        # radioButtons, not selectInput: a selectize value does not reliably
+        # round-trip under shinylive/webR (same reason the model chooser uses
+        # radios), and the levels are too unevenly spaced for a stepped slider.
+        pick <- function(id, label, lv_vals, dflt) radioButtons(id, label, inline = TRUE,
+          choices = stats::setNames(as.character(lv_vals), lv_vals),
+          selected = as.character(nearest(isolate(input[[id]]), lv_vals) %||% dflt))
+        tagList(
+          pick("lambda_bar", "Prompts per day (planned)", lv$lambda, 3),
+          pick("D", "Duration (days)", lv$D, 14),
+          helpText("Everyone is scheduled the same number of prompts. Compliance and ",
+                   "fatigue below still thin them, so the realised count is ",
+                   tags$b("Binomial"), " — random, but around a planned maximum. That ",
+                   "missingness is the part PowerAnalysisIL does not model. ",
+                   "Each option is a simulated design, so the answer is exact."))
+      } else {
+        tagList(
+          sliderInput("lambda_bar", "Prompts per day (planned)", 1, 8, 3, step = 1),
+          sliderInput("D", "Duration (days)", 3, 60, 14, step = 1),
+          helpText("Everyone is scheduled the same number of prompts. Compliance and ",
+                   "fatigue below still thin them, so the realised count is ",
+                   tags$b("Binomial"), " — random, but around a planned maximum. That ",
+                   "missingness is the part PowerAnalysisIL does not model."))
+      }
     } else if (grid_backed()) {
       # Sliders, like every other design — but stepped onto the simulated grid so
       # each stop is an exact R = 2000 cell. Duration (step 7) and CV (step 0.6)
@@ -260,15 +325,17 @@ server <- function(input, output, session) {
       # was not simulated, so it snaps to the nearest simulated rate (see the note
       # under the results). Interpolating duration or rate instead would reach 14
       # and 12 points of error — which is why only N is interpolated.
+      lv <- levels_for(model_id(), "poisson") %||% LV
       tagList(
-        sliderInput("D", "Duration (days)", 7, 28,
-                    nearest(isolate(input$D), LV$D) %||% 14, step = 7),
-        sliderInput("lambda_bar", "Mean trigger rate (per day)", 1, 4,
-                    nearest(isolate(input$lambda_bar), LV$lambda) %||% 2, step = 1),
+        sliderInput("D", "Duration (days)", min(lv$D), max(lv$D),
+                    nearest(isolate(input$D), lv$D) %||% 14, step = 7),
+        sliderInput("lambda_bar", "Mean trigger rate (per day)", min(lv$lambda), max(lv$lambda),
+                    nearest(isolate(input$lambda_bar), lv$lambda) %||% 2, step = 1),
         sliderInput("cv", "Between-person variability in trigger rate (CV)", 0.3, 0.9,
-                    nearest(isolate(input$cv), LV$cv) %||% 0.3, step = 0.6),
-        helpText("Each slider stop is a simulated design, so the answer is exact ",
-                 "(R = 2000). Duration and CV land only on simulated levels; a rate of ",
+                    nearest(isolate(input$cv), lv$cv) %||% 0.3, step = 0.6),
+        helpText(sprintf("Each slider stop is a simulated design, so the answer is exact (R = %s). ",
+                         format(slab_R(model_id(), "poisson"), big.mark = ",")),
+                 "Duration and CV land only on simulated levels; a rate of ",
                  "3/day was not simulated and snaps to the nearest that was."))
     } else {
       tagList(
@@ -301,17 +368,25 @@ server <- function(input, output, session) {
     anchor <- if (sp$target == "b10" && sp$l1 == "lag")
       "Autoregressive effects in ESM are often ~0.2–0.5."
     else "Rough anchors (outcome-SD units): ~0.1 small · ~0.3 medium · ~0.5 large."
+    # Default to the effect this partition was SIMULATED at, so the opening view
+    # is an exact grid hit rather than an instant refusal. Each model powers a
+    # different coefficient and its grid was calibrated to span the 0.8 boundary
+    # for that coefficient, so one shared default (0.2) would miss for most of
+    # them — and for the dummy-coded models it is not even the same scale.
+    rf  <- ref_effect(model_id(), trigger_mode_now())
+    dfl <- function(field, fallback) if (is.null(rf)) fallback else rf[[field]]
     ui <- list(
-      sliderInput("eff", lbl, 0.05, 1.0, 0.2, step = 0.05),
+      sliderInput("eff", lbl, 0.05, 1.0, dfl("eff", 0.2), step = 0.05),
       helpText(style = "margin-top:-8px", anchor,
                " Set this from a pilot or a comparable published study, not the default."))
     # context effects that exist in this model but are not the thing being powered
     if (sp$target == "b11")
       ui <- c(ui, list(sliderInput("b_main",
         if (sp$l1 == "lag") "Average carry-over (context)" else "Average within-person effect (context)",
-        0, 0.8, 0.3, step = 0.05)))
+        0, 0.8, dfl("b_main", 0.3), step = 0.05)))
     if (sp$target != "b01" && sp$l2 != "none")
-      ui <- c(ui, list(sliderInput("b_l2", "Person-level main effect (context)", 0, 0.8, 0.3, step = 0.05)))
+      ui <- c(ui, list(sliderInput("b_l2", "Person-level main effect (context)",
+        0, 0.8, dfl("b_l2", 0.3), step = 0.05)))
     do.call(tagList, ui)
   })
 
@@ -380,8 +455,9 @@ server <- function(input, output, session) {
   # cell; ties break to the lower rate, so a snapped answer never overstates
   # power. Only affects grid mode — live simulation reads the rate as-is.
   grid_lambda <- function(lam) {
-    if (any(abs(lam - LV$lambda) < 1e-9)) return(lam)
-    LV$lambda[which.min(abs(lam - LV$lambda))]
+    lv <- (levels_for(model_id(), trigger_mode_now()) %||% LV)$lambda
+    if (any(abs(lam - lv) < 1e-9)) return(lam)
+    lv[which.min(abs(lam - lv))]
   }
   build_cell <- function(N = NULL) {
     fixed <- identical(input$design_type, "fixed")
@@ -423,10 +499,21 @@ server <- function(input, output, session) {
   # (matching the run-button's JS condition), and defaults to lookup otherwise —
   # else the default view would fall through to live simulation.
   eng_choice <- reactive(if (isTRUE(input$show_advanced)) (input$engine %||% "lookup") else "lookup")
-  grid_backed <- reactive(model_id() == 3L &&
-                          !identical(input$design_type, "fixed") &&
-                          identical(eng_choice(), "lookup"))
-  sim_mode <- reactive(!grid_backed())
+  trigger_mode_now <- reactive(if (identical(input$design_type, "fixed")) "fixed" else "poisson")
+  # Whether a precomputed slab exists for what is on screen. Data-driven, so a
+  # model becomes instant the moment its slab ships — no code change.
+  grid_capable <- reactive(has_slab(model_id(), trigger_mode_now()))
+  grid_backed  <- reactive(grid_capable() && identical(eng_choice(), "lookup"))
+  sim_mode     <- reactive(!grid_backed())
+
+  # Mirror the two server-side reactives to the client so conditionalPanel can
+  # read them directly. This replaces a JS expression that re-implemented
+  # sim_mode() from raw input ids — which had to be kept in sync by hand and
+  # could not see the grid at all, so it could not know which models are covered.
+  output$js_sim_mode <- reactive(sim_mode())
+  output$js_grid_capable <- reactive(grid_capable())
+  outputOptions(output, "js_sim_mode", suspendWhenHidden = FALSE)
+  outputOptions(output, "js_grid_capable", suspendWhenHidden = FALSE)
 
   # --- estimate: instant lookup by default, simulation only on demand -------
   # The completed simulation lives in a reactiveVal, NOT gated on input$run's
@@ -749,9 +836,13 @@ server <- function(input, output, session) {
     # simulate" line. Single view only.
     if (identical(input$mode, "curve")) return(NULL)
     r <- estimate()
+    # R comes from the answering ROW, never a literal: the study grid ran at
+    # R = 2000 and the tool-support slabs at R = 1000, so a hardcoded badge would
+    # overstate the precision of every model but the paper's.
+    Rlab <- function() format(as.integer(r$R_total), big.mark = ",")
     b <- switch(r$source,
-      grid_exact  = badge("● Exact grid cell · R = 2000", "#1e7e34"),
-      grid_interp = badge(sprintf("◐ Interpolated over %s · R = 2000", r$interp_dims), "#1b6ca8"),
+      grid_exact  = badge(sprintf("● Exact grid cell · R = %s", Rlab()), "#1e7e34"),
+      grid_interp = badge(sprintf("◐ Interpolated over %s · R = %s", r$interp_dims, Rlab()), "#1b6ca8"),
       simulated   = badge(sprintf("▲ Live simulation · R = %s", r$R_total), "#b8860b"),
       awaiting    = badge("▷ Ready to simulate", "#1b6ca8"),
       unsupported = badge("✕ Not answerable from the grid", "#6c757d"))
@@ -852,12 +943,19 @@ server <- function(input, output, session) {
 
   # --- curve mode ----------------------------------------------------------
   # In lookup mode, snap to the grid's own N levels: every point is then an exact
-  # R=2000 hit, for free — strictly better than 6 interpolated ones.
+  # simulated cell, for free — strictly better than 6 interpolated ones. The
+  # levels come from the partition in play rather than the paper's slab, so a
+  # partition simulated at different N values cannot silently plot off-grid.
   curve_tab <- reactive({
     req(identical(input$mode, "curve"))
     if (grid_backed()) {
       # instant lookups — safe to compute reactively (no simulation)
-      n <- sort(unique(PR$N)); Ns <- n[n >= input$Ncurve[1] & n <= input$Ncurve[2]]
+      lv <- levels_for(model_id(), trigger_mode_now())
+      n <- if (is.null(lv)) sort(unique(PR$N)) else
+             sort(unique(G$cells$N[G$cells$model == model_id() &
+                                   G$cells$trigger_mode == trigger_mode_now() &
+                                   G$cells$grid == base_slab_name(model_id(), trigger_mode_now())]))
+      Ns <- n[n >= input$Ncurve[1] & n <= input$Ncurve[2]]
       req(length(Ns) > 0)
       rows <- lapply(Ns, function(v) {
         r <- lookup_cell(as.list(build_cell(N = v)), G)

@@ -1,5 +1,9 @@
 SIM <- normalizePath(file.path(dirname(sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE)[1])), ".."), mustWork = FALSE)
 if (is.na(SIM) || !dir.exists(file.path(SIM, "R"))) SIM <- normalizePath(".")
+# models.R first: lookup.R reads the model registry to work out which parameters
+# are live for a given model (active_ref_keys), the same order app.R and
+# build-app.R load them in.
+source(file.path(SIM, "R", "models.R"))
 source(file.path(SIM, "R", "lookup.R"))
 RC <- file.path(SIM, "results-confirmatory")
 G <- load_grid(c(file.path(RC, "primary.csv"), file.path(RC, "secondary.csv")))
@@ -146,9 +150,6 @@ ok(abs(c0$sd_n - c9$sd_n) < 1e-9, "cv must be ignored in fixed mode")
 cat(sprintf("10. fixed engine: exactly balanced + Binomial thinning %s\n", if (fail == f0) "PASS" else "FAIL"))
 cat(sprintf("    fixed comp=1.00 -> mean_n=%.2f sd_n=%.2f | comp=0.75 -> mean_n=%.2f sd_n=%.2f\n",
             b$mean_n, b$sd_n, h$mean_n, h$sd_n))
-cat("\n", if (fail == 0) "ALL TESTS PASSED" else paste(fail, "FAILURE(S)"), "\n")
-quit(status = if (fail == 0) 0 else 1)
-
 # --- 11. fixed-mode reactive contract (regression for the browser race) ---
 # The bug: design_type and engine were two inputs, and estimate() could observe
 # design_type=fixed while engine still said lookup -> a stale "grid refusal".
@@ -160,6 +161,78 @@ mkcell_fixed <- data.frame(N = 40, D = 14, lambda_bar = 3, cv = 0, cap = Inf,
   compliance = 0.75, decay = 0, phi = 0.3, beta1 = 0.2, trigger_link = 0,
   trigger_mode = "fixed", stringsAsFactors = FALSE)
 rr <- lookup_cell(as.list(mkcell_fixed), G)
+rr <- lookup_cell(as.list(mkcell_fixed), G)
 ok(rr$source == "unsupported" && grepl("fixed schedule", rr$reason),
    "a fixed cell must be refused by the grid, so the app routes it to simulation")
 cat(sprintf("11. fixed-cell routing contract                     %s\n", if (fail == f0) "PASS" else "FAIL"))
+
+# --- 12. partitioning by (model, trigger_mode) ----------------------------
+# The table is keyed by model and schedule type, not just by design levers. A
+# partition that was never simulated must refuse; one that was must answer
+# WITHOUT being disturbed by parameters the model does not use.
+f0 <- fail
+base <- as.list(p[1, DESIGN_KEYS])
+
+# (a) a model with no slab refuses, and names itself in the reason
+for (m in c(1, 5, 9, 11)) {
+  cc <- base; cc$model <- m
+  r  <- lookup_cell(cc, G)
+  ok(r$source == "unsupported" && grepl(paste0("Model ", m), r$reason),
+     sprintf("model %d must refuse while it has no slab, and say so", m))
+}
+# (b) the paper's model still answers when a model id is passed explicitly
+cc <- base; cc$model <- 3
+ok(lookup_cell(cc, G)$source == "grid_exact", "model=3 must still be an exact hit")
+
+# (c) INERT parameters must not refuse. Model 3 has no Level-2 predictor (W is
+# identically 0 in the DGM), so beta_l2 / beta_cross cannot move any simulated
+# value — refusing over them would send a perfectly answerable design to a
+# one-minute browser run for no reason.
+for (k in c("beta_l2", "beta_cross")) {
+  cc <- base; cc[[k]] <- 0.77
+  ok(lookup_cell(cc, G)$source == "grid_exact",
+     sprintf("%s is inert for Model 3 and must not affect the lookup", k))
+}
+# (d) ... but a LIVE parameter still refuses, on the same grid.
+cc <- base; cc$beta1 <- 0.77
+ok(lookup_cell(cc, G)$source == "unsupported",
+   "beta1 IS live for Model 3, so an unsimulated value must still refuse")
+
+# (e) active_ref_keys must match what the DGM actually reads (dgm.R)
+ok(!("beta_l2" %in% active_ref_keys(3)),   "Model 3: beta_l2 inert (l2 = none)")
+ok(!("beta1"   %in% active_ref_keys(1)),   "Model 1: beta1 inert (l1 = none)")
+ok(!("phi"     %in% active_ref_keys(9)),   "Model 9: phi inert (the lag IS the predictor)")
+ok("beta_cross" %in% active_ref_keys(7),   "Model 7: beta_cross is the target, must be live")
+ok("beta_l2"    %in% active_ref_keys(2),   "Model 2: beta_l2 is the target, must be live")
+cat(sprintf("12. (model, schedule) partitioning + inert params   %s\n", if (fail == f0) "PASS" else "FAIL"))
+
+# --- 13. whatever tool-support slabs are present must round-trip ----------
+# Skipped when results-tool/ has not been built yet, so the suite stays green on
+# a fresh clone; exercised in full once the slabs ship.
+f0 <- fail
+tool_dir <- file.path(SIM, "results-tool")
+tool_csv <- if (dir.exists(tool_dir)) setdiff(
+  list.files(tool_dir, "\\.csv$", full.names = TRUE),
+  list.files(tool_dir, "\\.part\\.csv$", full.names = TRUE)) else character(0)
+if (!length(tool_csv)) {
+  cat("13. tool-support slabs                             SKIP (none built yet)\n")
+} else {
+  GT <- load_grid(c(file.path(RC, c("primary.csv", "secondary.csv")), tool_csv))
+  tc <- GT$cells[!GT$cells$grid %in% c("primary", "S1_cap", "S2_compliance",
+                                       "S3_phi", "S4_effect", "S5_context_linked"), ]
+  worst_t <- 0
+  for (i in seq_len(nrow(tc))) {
+    cell <- as.list(tc[i, c(DESIGN_KEYS, PARTITION_KEYS)])
+    r <- lookup_cell(cell, GT)
+    if (r$source != "grid_exact") {
+      ok(FALSE, sprintf("%s row %d: source=%s (%s)", tc$grid[i], i, r$source, r$reason)); next
+    }
+    d <- abs(r$power_all - tc$power_all[i]); worst_t <- max(worst_t, d)
+    ok(d < 1e-12, sprintf("%s row %d power_all mismatch", tc$grid[i], i))
+  }
+  cat(sprintf("13. %d tool-slab cells round-trip exactly          %s (worst %.2e)\n",
+              nrow(tc), if (fail == f0) "PASS" else "FAIL", worst_t))
+}
+
+cat("\n", if (fail == 0) "ALL TESTS PASSED" else paste(fail, "FAILURE(S)"), "\n")
+quit(status = if (fail == 0) 0 else 1)

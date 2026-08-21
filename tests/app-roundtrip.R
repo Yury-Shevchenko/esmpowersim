@@ -23,9 +23,12 @@ testServer("app", {
   # fixed design + a run => a real simulated result on screen (supported)
   do.call(session$setInputs, c(list(design_type="fixed"), base))
   session$setInputs(run = 1)
-  ok(estimate()$source == "simulated", "simulated result present after run")
+  # k=3/day x 14 days at N=40 is a simulated cell of the fixed slab, so this is
+  # answered from the table. (It used to be a live run: before the fixed slabs
+  # existed, no planned schedule could be looked up.)
+  ok(estimate()$source == "grid_exact", "covered fixed design answers from the grid")
   ok(isTRUE(supported()), "result is supported")
-  ok(!isTRUE(grid_backed()), "fixed design is not grid-backed (N falls back to input$N)")
+  ok(isTRUE(grid_backed()), "a covered fixed design is grid-backed")
 
   # no return URL yet: send_back hidden, discovery CTA visible
   ok(is.null(return_url()), "no return_url before any deep-link")
@@ -37,7 +40,14 @@ testServer("app", {
   session$setInputs(url_query = "return=https%3A%2F%2Fsmaat.eu%2Fdashboard%2Fstudies%2Fabc")
   ok(!is.null(return_url()), "valid SMAAT return_url captured")
   html <- H(output$send_back)
-  ok(grepl("plannedN=40", html), "send_back link carries plannedN=40 (current N)")
+  # Now that a fixed design is grid-backed, the handoff carries the RECOMMENDED
+  # sample size rather than the one on screen — that is the point of solve-for-N.
+  # Assert against the app's own definition so button and label cannot drift.
+  want <- n_to_return()
+  ok(grepl(paste0("plannedN=", want), html, fixed = TRUE),
+     sprintf("send_back link carries the recommended plannedN=%s", want))
+  ok(grepl(paste0("Use N = ", want, " in SMAAT"), html, fixed = TRUE),
+     "button label and href quote the same N")
   ok(grepl("_top", html), "send_back navigates the top tab (target=_top)")
   ok(is.null(output$smaat_cta), "discovery CTA suppressed once inside a SMAAT flow")
 })

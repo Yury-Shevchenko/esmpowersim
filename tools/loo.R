@@ -4,9 +4,23 @@
 # (all other design params held fixed). Compare to the actual simulated value.
 # Settles: which axes may we interpolate, and what is the honest error band?
 
+#
+# Runs over EVERY base slab, not just the paper's. Each (model, schedule)
+# partition is interpolated along N by the same code, so each needs its own
+# measured error band — a number taken from Model 3's grid is an assumption
+# about the others, and the whole point of this file is to not assume.
 SIM <- normalizePath(file.path(dirname(sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE)[1])), ".."), mustWork = FALSE)
 if (is.na(SIM) || !dir.exists(file.path(SIM, "R"))) SIM <- normalizePath(".")
-p <- read.csv(file.path(SIM, "results-confirmatory", "primary.csv"), stringsAsFactors = FALSE)
+
+RC   <- file.path(SIM, "results-confirmatory")
+TOOL <- file.path(SIM, "results-tool")
+slab_files <- c(file.path(RC, "primary.csv"),
+                if (dir.exists(TOOL)) setdiff(list.files(TOOL, "\\.csv$", full.names = TRUE),
+                                              list.files(TOOL, "\\.part\\.csv$", full.names = TRUE)))
+slab_files <- slab_files[file.exists(slab_files)]
+SLABS <- lapply(slab_files, function(f) read.csv(f, stringsAsFactors = FALSE))
+names(SLABS) <- vapply(SLABS, function(d) as.character(d$grid[1]), character(1))
+p <- SLABS[["primary"]]
 
 emp_logit <- function(power, R) {           # analyze.R:28-31 — the manuscript's own scale
   k <- round(power * R)
@@ -89,3 +103,34 @@ print(head(data.frame(N = r$level, actual = round(r$actual, 3),
 
 cat("\nNOTE: secondary.csv has D in {14,28} only — no interior level, so D-interpolation\n")
 cat("      inside a secondary slab CANNOT be validated by LOO at all.\n")
+
+# =============================================================================
+# Per-partition N-interpolation error.
+#
+# lookup.R interpolates N and reports interp_se_power scaled to the p90 of this
+# error. That p90 was measured on the paper's grid alone; every other partition
+# uses the SAME interpolator, so each needs its own measured number. What is
+# printed below is what belongs in LOO_P90_N_BY_SLAB.
+# =============================================================================
+cat("\n\n=== N-interpolation error by slab (power_all, percentage points) ===\n")
+cat("cells at the power ceiling cannot show interpolation error, so the\n")
+cat("sub-ceiling column is the one that matters for a planning answer.\n\n")
+cat(sprintf("%-14s %5s %7s %7s %7s %9s\n", "slab", "n", "median", "p90", "max", "p90(sub)"))
+summ <- list()
+for (nm in names(SLABS)) {
+  d <- SLABS[[nm]]
+  if (length(unique(d$N)) < 3) { cat(sprintf("%-14s  (N has no interior level)\n", nm)); next }
+  r <- loo_axis(d, AXES$N, METRICS$power_all)
+  if (is.null(r) || !nrow(r)) next
+  e   <- abs(r$err_pts)
+  sub <- abs(r$err_pts[!r$at_ceiling])
+  p90 <- unname(quantile(e, .9))
+  summ[[nm]] <- p90
+  cat(sprintf("%-14s %5d %7.2f %7.2f %7.2f %9.2f\n", nm, nrow(r), median(e), p90, max(e),
+              if (length(sub)) unname(quantile(sub, .9)) else NA_real_))
+}
+cat("\n--- as an R literal for lookup.R ---\n")
+cat("LOO_P90_N_BY_SLAB <- list(\n")
+cat(paste(sprintf('  `%s` = %.4f', names(summ), unlist(summ) / 100), collapse = ",\n"), "\n)\n")
+cat(sprintf("\nworst slab: %s at %.2f pts | paper's grid (primary): %.2f pts\n",
+            names(summ)[which.max(unlist(summ))], max(unlist(summ)), summ[["primary"]]))

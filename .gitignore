@@ -5,6 +5,16 @@ results/
 # despite the blanket *.csv rule above.
 !results-confirmatory/*.csv
 
+# Tool-support slabs (per-model and fixed-schedule lookup tables). Also tracked —
+# the app ships them — but deliberately NOT in results-confirmatory/, because
+# they are not study results and must never be read as part of the data release.
+# The .run-meta.txt files travel with them; the driver's console log does not
+# (it is ~10 MB of lme4 singular-fit warnings, and every fact worth keeping from
+# a run is already in that run's run-meta).
+!results-tool/*.csv
+!results-tool/*.run-meta.txt
+results-tool/run.log
+
 # app/ is the shinylive appdir. Only app/app.R is source; everything else under
 # it is assembled by tools/build-app.R from an explicit allowlist, so the engine
 # has exactly one home (R/) and cannot drift into a stale second copy.

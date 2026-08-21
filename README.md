@@ -34,9 +34,17 @@ question, so each powers a different effect. Pick one in the app, or deep-link i
 | 9 | How strong is the **autoregressive** (carry-over) effect? | AR effect |
 | 10, 11 | Does a group / person-level variable moderate the AR effect? | cross-level interaction |
 
-**Model 3 is the paper's model** and the only one the precomputed grid covers, so it answers instantly;
-every other model is simulated live in the browser (~1 min). All eleven inherit the trigger process, so
-the random-observation-count problem applies to each of them — which is the part no existing tool handles.
+**Model 3 is the paper's model**, and the one the study's own grid covers at R = 2,000. The other ten are
+covered by tool-support slabs at R = 1,000, so **every model answers instantly** — from the table, not from
+a simulation in your browser. All eleven inherit the trigger process, so the random-observation-count
+problem applies to each of them, which is the part no existing tool handles.
+
+Each model powers a **different coefficient**, so each slab was simulated at its own reference effect,
+chosen by the criterion that set the paper's β₁ = 0.2: the grid has to span the 0.8 decision boundary, or
+"how many participants do I need?" has no answer inside it. Models 1, 5 and 10 — the dummy-coded Level-2
+models carrying a random slope — run at twice their twins' coefficient, because a balanced dummy has
+SD(W) = 0.5 and so carries half the standardised effect of an N(0,1) continuous predictor. The value each
+slab used travels with it in the CSV and is what the app's effect slider defaults to.
 
 **One documented divergence from Lafit.** Their Models 1–8 carry temporal dependence as AR(1) *errors*
 (which `lme4` cannot fit); their Models 9–11 use a lagged *outcome*. This tool uses a lagged outcome
@@ -69,7 +77,7 @@ Choose the design type in the app, or deep-link it with `?design=fixed` (vs the 
 | `R/fit.R` | Fits `y ~ x + y_lag + (1 + x \| id)` (lme4, REML); extracts β̂₁, Wald test, CI, convergence |
 | `R/seeds.R` | Deterministic (master_seed, cell, rep) → seed; every dataset regenerable |
 | `R/performance.R` | Runs R reps of a cell → power, Type-S/M, bias, RMSE, coverage, convergence, effective-n dist, all with Monte Carlo SE |
-| `R/grid.R` | Primary (144 cells) + secondary S1–S5 + the prospectively-registered `subceiling` follow-up + a `smoke` grid |
+| `R/grid.R` | Study grids: primary (144 cells) + secondary S1–S5 + the prospectively-registered `subceiling` follow-up + a `smoke` grid. Also the **tool-support** grids (`models_grid`, `fixed_grid`), which are not part of the protocol |
 | `R/run.R` | CLI driver → results CSV |
 | `R/validate.R` | Pre-run checks (protocol §7): Lafit special case, recovery, DGM sanity |
 | `R/analyze.R` | H1–H4 tests against the protocol's §5 criteria + power/convergence surfaces → `analysis-summary.md` |
@@ -77,6 +85,9 @@ Choose the design type in the app, or deep-link it with `?design=fixed` (vs the 
 | `R/lookup.R` | Instant answers from the precomputed grid (same contract as `run_cell()`) |
 | `app/app.R` | Companion planning tool (front end over the same engine) |
 | `tools/build-app.R` | Assembles `app/` from an explicit allowlist, then validates it |
+| `tools/run-tool-grids.sh` | Produces the tool-support slabs into `results-tool/`; resumable per slab |
+| `tools/loo.R` | Leave-one-out validation of the interpolator, per slab → `LOO_P90_N_BY_SLAB` |
+| `repro/rscript-4.3.1.sh` | Runs anything under the **pinned** R 4.3.1 / lme4 1.1-34 (see Reproducibility) |
 | `renv.lock`, `DESCRIPTION`, `Dockerfile`, `repro/` | Reproducibility: pinned versions, env check, snapshot |
 
 ## Run
@@ -100,6 +111,30 @@ Rscript R/run.R --grid=subceiling --R=2000 --seed=20260722 --out=results/subceil
 Rscript R/analyze.R --primary=results/primary.csv \
     --secondary=results/secondary.csv --outdir=results/analysis
 ```
+
+**Tool-support slabs** (the lookup table behind the planner — *not* study results, and not analysed by
+`analyze.R`). These fill the models and schedules the study grid never simulated, so the planner answers
+them from the table instead of running a simulation in the researcher's browser:
+
+```sh
+# all 21 slabs, ~26 h on 6 cores, resumable (a finished slab is skipped)
+./tools/run-tool-grids.sh
+
+# or one at a time
+./repro/rscript-4.3.1.sh R/run.R --grid=model_9 --R=1000 --seed=20260709 --cores=6 \
+    --out=results-tool/model_9.csv
+./repro/rscript-4.3.1.sh R/run.R --grid=fixed_3 --R=1000 --seed=20260709 --cores=6 \
+    --out=results-tool/fixed_3.csv
+
+# re-measure the interpolator after any slab changes, then rebuild the app
+./repro/rscript-4.3.1.sh tools/loo.R
+./repro/rscript-4.3.1.sh tools/build-app.R
+```
+
+Run these under `repro/rscript-4.3.1.sh`, not `Rscript`: the table must come from one engine, and this
+machine's default R is no longer the one that produced the study grid. `npm run test:repro` shows the
+difference is real — on R 4.6.1 / lme4 2.0.1 the marginal fits at the sparse corner move
+(convergence 0.570 → 0.560 on the reference cell).
 
 Requires R with `lme4`, `MASS`, `Matrix`, `nlme`. Pin versions with `renv` before the main
 run and archive `sessionInfo()` (§6). `brms`/`glmmTMB` cross-checks (protocol §3-M) are optional
@@ -144,7 +179,16 @@ reproduce, strongest first:
 docker build -t esm-power-sim .          # airtight: pins R 4.3.1 + exact package builds
 Rscript -e "renv::restore()"             # from renv.lock (engine pinned; run in a fresh project lib)
 Rscript repro/check-env.R                # verify the current machine matches; --install adds missing pkgs
+./repro/rscript-4.3.1.sh repro/check-env.R   # ... or verify the pinned R directly, where it is installed
 ```
+
+**If R 4.3.1 is installed alongside a newer R, you cannot reach it with `Rscript`.** The macOS framework's
+`bin/R` wrapper hardcodes `R_HOME` to the `Current` symlink and explicitly discards any `R_HOME` you set,
+so `Versions/4.3-arm64/Resources/bin/Rscript` silently runs the newest R instead — with the newest lme4.
+[`repro/rscript-4.3.1.sh`](repro/rscript-4.3.1.sh) invokes the exec binary underneath the wrapper, which
+does honour `R_HOME`, and pins the library path to 4.3's own tree. It is verified against the archived
+grid: re-running primary cells through it reproduces `results-confirmatory/primary.csv` to 15 significant
+digits. Use it for anything whose numbers ship.
 
 Every real run writes a `*.run-meta.txt` next to its results CSV (timestamp, git SHA, dirty-state,
 `sessionInfo()`), so any result carries a record of how it was produced. A reference snapshot is in
@@ -163,17 +207,30 @@ Rscript -e "shiny::runApp('app', launch.browser = TRUE)"   # needs shiny >= 1.8
 
 Two engines behind one contract ([`R/lookup.R`](R/lookup.R)):
 
-- **Lookup (default, instant).** Reads the precomputed grid (504 cells, R = 2000/1000). An exact hit
-  carries MCSE ≤ ~1.6 points. This is not a cheap approximation of a live run — it is **~3× more precise
-  *and* instant**, and the UI says so, because the instinct is the opposite.
+- **Lookup (default, instant).** Reads the precomputed grid (**3,264 cells**: the study's 504 at
+  R = 2,000/1,000, plus 2,760 tool-support cells at R = 1,000 covering the other ten models and
+  fixed schedules for all eleven). An exact hit carries MCSE ≤ ~1.6 points. This is not a cheap
+  approximation of a live run — it is **~3× more precise *and* instant**, and the UI says so, because the
+  instinct is the opposite. The badge over each answer names the R behind that particular row.
 - **Simulate (opt-in, slow).** Runs the real engine in the browser at R = 100 (MCSE ~5 points, ~50 s for a
   typical design). Never auto-fires; the button carries a time estimate and refuses designs over ~10 min.
 
-Interpolation is **measured, not assumed** (leave-one-out over the primary grid, error on `power_all`):
-N is interpolated (p90 2.2 pts, and biased conservative); **D and rate are snapped to simulated levels**,
-because interpolating them reaches 14 and 12 points of error. CV has only two simulated levels, so it snaps
-too. Anything the grid cannot answer — two levers off reference, an off-grid value, or N outside 20–150 —
-is **refused with a reason**, never guessed.
+Interpolation is **measured, not assumed** (leave-one-out over every base slab, error on `power_all`):
+N is interpolated; **D and rate are snapped to simulated levels**, because interpolating them reaches 14
+and 12 points of error. CV has only two simulated levels, so it snaps too. Anything the grid cannot answer
+— two levers off reference, an off-grid value, or N outside 20–150 — is **refused with a reason**, never
+guessed.
+
+The N-interpolation error band is **per slab**, not one shared number: the paper's grid interpolates best
+at p90 2.2 points, while the moderation models reach 4.0, so quoting Model 3's precision on a cross-level
+interaction would understate the uncertainty by about half. `tools/loo.R` regenerates the whole table and
+prints it as the literal that belongs in `LOO_P90_N_BY_SLAB`; an unmeasured slab falls back to the *worst*
+measured value, never the best.
+
+**Fixed schedules got their own lever levels**, because a planned schedule saturates far earlier than a
+triggered one — at N = 150 over 28 days, power reads 1.000 at every rate from 1 to 8 prompts/day. Their
+grid therefore runs from 3-day bursts up to 8 prompts/day, where the decision boundary actually lives,
+rather than reusing the triggered grid's 7–28 days at 1–4 triggers/day.
 
 The headline is **power counting non-convergence as a failure to detect**, with the
 convergence-conditional number a click away. They diverge by up to 42 points (at N=150, D=7, rate=1:

@@ -6,12 +6,24 @@
 # points, where a live R = 100 run carries ~5. It is *more* precise AND instant.
 # So the planner answers from the grid by default and only simulates off-grid.
 #
-# The grid's shape dictates what can be answered (verified against the CSVs):
-#   * primary   = full factorial N x lambda_bar x cv x D, all six other levers at
-#                 REF. 144 cells, R = 2000.
-#   * secondary = five slabs, each moving exactly ONE lever off REF, over a
-#                 coarser core. 360 cells, R = 1000.
+# The grid's shape dictates what can be answered (verified against the CSVs).
+# It is PARTITIONED by (model, trigger_mode) — see PARTITION_KEYS below — and
+# within each partition:
+#   * a base slab = full factorial N x lambda_bar x cv x D, every other lever at
+#                   that partition's REF.
+#   * optional secondary slabs, each moving exactly ONE lever off REF.
 #   * No cell anywhere has TWO levers off REF simultaneously.
+#
+# Partitions present:
+#   (3, poisson)   the STUDY grid: primary (144 cells, R = 2000) + S1-S5 (360
+#                  cells, R = 1000), one lever off REF each.
+#   (m, poisson)   tool-support, m in {1,2,4..11}: model_<m>, 144 cells, R = 1000.
+#   (m, fixed)     tool-support, all eleven models: fixed_<m>, 120 cells,
+#                  R = 1000, over N x k x D (cv is inert on a planned schedule).
+# Only the study partition has secondary slabs, so off-REF levers (cap,
+# compliance, decay, phi, effect size, context-linking) are answerable for the
+# paper's model alone; everything else refuses and falls through to live
+# simulation, exactly as before.
 #
 # Interpolation policy is measured, not assumed (leave-one-out over primary,
 # absolute error on power_all, in percentage points):
@@ -24,13 +36,79 @@
 
 # design levers, in the order run_cell() and the CSVs use
 DESIGN_KEYS <- c("N", "lambda_bar", "cv", "D",
-                 "cap", "compliance", "decay", "phi", "beta1", "trigger_link")
-# the six the primary grid holds at a reference value
-REF_KEYS <- c("cap", "compliance", "decay", "phi", "beta1", "trigger_link")
+                 "cap", "compliance", "decay", "phi", "beta1", "trigger_link",
+                 "beta_l2", "beta_cross")
+# the levers a base slab holds at a reference value
+REF_KEYS <- c("cap", "compliance", "decay", "phi", "beta1", "trigger_link",
+              "beta_l2", "beta_cross")
 
-# p90 of |interpolation error| on power_all along N, from the LOO study above.
-# Regenerate with tools/loo.R if the grid is ever re-run.
-LOO_P90_N <- 0.0216
+# PARTITION KEYS. These are not design levers to be interpolated or snapped —
+# they select WHICH TABLE applies. A different model is a different fitted model
+# powering a different coefficient; a fixed schedule is a different
+# data-generating mechanism. Neither is a corner of the other's grid, so there is
+# nothing between them to interpolate toward. Each (model, trigger_mode) pair is
+# looked up in its own slab family, with its own reference values.
+PARTITION_KEYS <- c("model", "trigger_mode")
+
+# The base slab of a partition: the full factorial over N x lambda_bar x cv x D
+# with every REF key at reference. For the paper's model on a triggered schedule
+# that is the study's `primary` grid; the tool-support slabs are named by
+# convention in grid.R.
+partition_key <- function(model, trigger_mode)
+  paste0(as.integer(model), "|", as.character(trigger_mode))
+
+base_slab_name <- function(model, trigger_mode) {
+  if (identical(as.character(trigger_mode), "fixed")) return(paste0("fixed_", model))
+  if (as.integer(model) == 3L) return("primary")
+  paste0("model_", model)
+}
+
+# Which REF keys are actually LIVE for a model. The DGM ignores the rest, so
+# comparing them would refuse a design over a parameter that provably cannot
+# change its answer — e.g. Model 3 has no Level-2 predictor at all (W is
+# identically 0), so beta_l2 and beta_cross cannot move a single simulated value.
+#
+# Reading the DGM (dgm.R, generate_dataset):
+#   l1 == "none"  (Models 1-2)   x is never used -> beta1, beta_cross inert
+#   l2 == "none"  (Models 3,4,9) W == 0          -> beta_l2, beta_cross inert
+#   l1 == "lag"   (Models 9-11)  the lagged outcome IS the predictor and its
+#                                coefficient is beta1, so the separate AR control
+#                                phi is never applied -> phi inert
+active_ref_keys <- function(model) {
+  spec  <- model_spec(model)
+  inert <- character(0)
+  if (spec$l1 == "none") inert <- c(inert, "beta1", "beta_cross")
+  if (spec$l2 == "none") inert <- c(inert, "beta_l2", "beta_cross")
+  if (spec$l1 == "lag")  inert <- c(inert, "phi")
+  setdiff(REF_KEYS, unique(inert))
+}
+
+# p90 of |interpolation error| on power_all along N, from the LOO study above,
+# measured PER SLAB by tools/loo.R. Regenerate it whenever a slab is re-run.
+#
+# One shared constant would have been wrong: the paper's grid interpolates along
+# N better than any other partition (2.16 points), while the moderation models
+# reach 4.01 — so Model 3's number applied globally would understate the
+# interpolation uncertainty of a cross-level interaction by about half.
+LOO_P90_N_BY_SLAB <- list(
+  `primary`  = 0.0216,
+  `model_1`  = 0.0303, `model_2`  = 0.0352, `model_4`  = 0.0057, `model_5` = 0.0378,
+  `model_6`  = 0.0327, `model_7`  = 0.0401, `model_8`  = 0.0298, `model_9` = 0.0144,
+  `model_10` = 0.0333, `model_11` = 0.0377,
+  `fixed_1`  = 0.0283, `fixed_2`  = 0.0355, `fixed_3`  = 0.0198, `fixed_4` = 0.0105,
+  `fixed_5`  = 0.0353, `fixed_6`  = 0.0266, `fixed_7`  = 0.0371, `fixed_8` = 0.0199,
+  `fixed_9`  = 0.0210, `fixed_10` = 0.0307, `fixed_11` = 0.0348
+)
+# The paper's value, kept as a named constant because the manuscript quotes it.
+LOO_P90_N <- LOO_P90_N_BY_SLAB[["primary"]]
+
+# An unmeasured slab falls back to the WORST measured value, never the paper's:
+# the error of a partition nobody has run LOO on is unknown, and the safe reading
+# of unknown is "as bad as the worst we have seen", not "as good as our best".
+loo_p90_n <- function(slab) {
+  v <- LOO_P90_N_BY_SLAB[[slab]]
+  if (is.null(v)) max(unlist(LOO_P90_N_BY_SLAB)) else v
+}
 
 # Identical to analyze.R:28-31. Duplicated deliberately: analyze.R is not part of
 # the shipped app (see tools/build-app.R), and this must not drift from it.
@@ -53,23 +131,56 @@ near <- function(a, b, tol = 1e-8) {
 # levels, the slab structure — is derived from the data rather than hardcoded,
 # so widening or re-running the grid is a drop-in CSV swap with no code change.
 load_grid <- function(paths) {
-  g <- do.call(rbind, lapply(paths, function(p) read.csv(p, stringsAsFactors = FALSE)))
+  g <- do.call(rbind, lapply(paths, function(p) {
+    d <- read.csv(p, stringsAsFactors = FALSE)
+    # Back-fill the columns that post-date the study grids, so the archived
+    # primary/secondary CSVs keep loading untouched. Their partition is the
+    # paper's: Model 3 on a triggered schedule. beta_l2 / beta_cross are inert
+    # for Model 3 (it has no Level-2 predictor) and are recorded only so the
+    # column exists — active_ref_keys() keeps them out of every comparison.
+    if (is.null(d$model))        d$model        <- 3L
+    if (is.null(d$trigger_mode)) d$trigger_mode <- "poisson"
+    if (is.null(d$beta_l2))      d$beta_l2      <- 0.3
+    if (is.null(d$beta_cross))   d$beta_cross   <- 0.1
+    d
+  }))
   for (k in DESIGN_KEYS) g[[k]] <- as.numeric(g[[k]])   # the literal "Inf" cap parses here
+  g$model        <- as.integer(g$model)
+  g$trigger_mode <- as.character(g$trigger_mode)
   if (anyNA(g[DESIGN_KEYS])) stop("lookup: NA in a design column after parsing")
+  if (anyNA(g[PARTITION_KEYS])) stop("lookup: NA in a partition column after parsing")
 
-  # REF = whatever the primary slab holds constant.
-  p <- g[g$grid == "primary", ]
-  if (!nrow(p)) stop("lookup: no primary rows")
-  ref <- lapply(REF_KEYS, function(k) {
-    u <- unique(p[[k]])
-    if (length(u) != 1) stop("lookup: primary grid is not constant in ", k)
-    u
-  })
-  names(ref) <- REF_KEYS
+  # Each (model, trigger_mode) partition carries its own reference values, taken
+  # from its base slab. Different models are simulated at different reference
+  # effects — a cross-level interaction and a within-person slope are not
+  # comparable quantities — so one global REF would be wrong for most of them.
+  parts <- unique(g[PARTITION_KEYS])
+  refs  <- list()
+  n_off <- integer(nrow(g))
+  for (i in seq_len(nrow(parts))) {
+    mdl <- parts$model[i]; tm <- parts$trigger_mode[i]
+    key <- partition_key(mdl, tm)
+    sel <- g$model == mdl & g$trigger_mode == tm
+    base_name <- base_slab_name(mdl, tm)
+    b <- g[sel & g$grid == base_name, ]
+    if (!nrow(b)) stop("lookup: partition ", key, " has no base slab (", base_name, ")")
+    live <- active_ref_keys(mdl)
+    r <- lapply(REF_KEYS, function(k) {
+      u <- unique(b[[k]])
+      # Only the LIVE keys must be constant. An inert one is free to hold
+      # whatever the run recorded, since it cannot move a simulated value.
+      if (k %in% live && length(u) != 1)
+        stop("lookup: base slab ", base_name, " is not constant in ", k)
+      u[1]
+    })
+    names(r) <- REF_KEYS
+    refs[[key]] <- r
 
-  # Invariant the answer policy depends on: never two levers off REF at once.
-  n_off <- vapply(seq_len(nrow(g)), function(i)
-    sum(!vapply(REF_KEYS, function(k) near(g[[k]][i], ref[[k]]), logical(1))), integer(1))
+    # Invariant the answer policy depends on: never two levers off REF at once.
+    idx <- which(sel)
+    n_off[idx] <- vapply(idx, function(j)
+      sum(!vapply(live, function(k) near(g[[k]][j], r[[k]]), logical(1))), integer(1))
+  }
   if (any(n_off > 1)) stop("lookup: grid invariant broken — ", sum(n_off > 1),
                            " cell(s) have >1 lever off REF; the answer policy assumes none")
 
@@ -80,24 +191,36 @@ load_grid <- function(paths) {
   if (any(is.na(g$power) & g$R_converged > 0)) stop("lookup: NA power with converged reps")
 
   g$.n_off <- n_off
-  structure(list(cells = g, ref = ref), class = "esm_grid")
+  structure(list(cells = g, ref = refs[[partition_key(3L, "poisson")]], refs = refs),
+            class = "esm_grid")
 }
 
-# which levers does this cell move off REF?
-off_ref <- function(cell, ref) {
-  REF_KEYS[!vapply(REF_KEYS, function(k) near(cell[[k]], ref[[k]]), logical(1))]
+# which levers does this cell move off REF? Only the keys that are live for this
+# model are considered — see active_ref_keys().
+off_ref <- function(cell, ref, keys = REF_KEYS) {
+  # A caller that omits an effect column is treated as asking for the reference
+  # value of it, not as a mismatch — older fixtures predate beta_l2/beta_cross.
+  same <- vapply(keys, function(k) {
+    v <- cell[[k]]
+    if (is.null(v) || length(v) != 1L || is.na(v)) return(TRUE)
+    near(v, ref[[k]])
+  }, logical(1))
+  keys[!same]
 }
 
 # ---------------------------------------------------------------------------
 # The columns run_cell() produces, so the UI can stay agnostic about provenance.
-RUN_CELL_COLS <- c(DESIGN_KEYS,
+RUN_CELL_COLS <- c(DESIGN_KEYS, PARTITION_KEYS,
                    "power", "mcse_power", "power_all", "type_s", "type_m",
                    "bias", "rel_bias", "emp_se", "rmse", "coverage", "ci_width",
                    "conv_rate", "R_converged", "R_total", "mean_n", "sd_n", "below_k")
 
 unsupported <- function(cell, reason) {
-  out <- as.data.frame(cell[DESIGN_KEYS])
-  for (k in setdiff(RUN_CELL_COLS, DESIGN_KEYS)) out[[k]] <- NA_real_
+  # Tolerate a caller that omits the newer columns: a refusal must never itself
+  # throw, or the UI loses the reason it was refused.
+  keep <- intersect(c(DESIGN_KEYS, PARTITION_KEYS), names(cell))
+  out  <- as.data.frame(cell[keep], stringsAsFactors = FALSE)
+  for (k in setdiff(RUN_CELL_COLS, keep)) out[[k]] <- NA_real_
   out$mcse_power_all <- NA_real_
   out$source <- "unsupported"; out$source_grid <- NA_character_
   out$source_rows <- NA_character_; out$interp_dims <- ""
@@ -115,40 +238,43 @@ unsupported <- function(cell, reason) {
 #'   interp_se_power  interpolation uncertainty. NOT MCSE: MCSE shrinks with R,
 #'               this is a property of the grid's resolution and never shrinks.
 lookup_cell <- function(cell, G) {
-  g <- G$cells; ref <- G$ref
+  g <- G$cells
 
-  # The grid covers ONE model: the paper's within-person effect (Model 3). Any
-  # other of the eleven models is a different fitted model with a different
-  # effect of interest, never simulated here, so it can only be answered live.
+  # --- 1. select the partition ---------------------------------------------
+  # A model and a schedule type are not levers to interpolate along: each names
+  # a different table. Pick it, or say plainly that it was never simulated.
   mdl <- if (is.null(cell$model)) 3L else as.integer(cell$model)
-  if (mdl != 3L)
-    return(unsupported(cell, paste0(
-      "The precomputed grid covers only the within-person effect (Model 3). ",
-      "This model is answered by live simulation.")))
+  tm  <- if (is.null(cell$trigger_mode)) "poisson" else as.character(cell$trigger_mode)
 
-  # The grid simulates event-/location-triggered designs only: every cell draws
-  # its prompt count from a Poisson process. A fixed schedule has a PLANNED
-  # count, which is a different data-generating mechanism — not a corner of this
-  # grid — so there is nothing here to look up or interpolate toward.
-  tm <- if (is.null(cell$trigger_mode)) "poisson" else as.character(cell$trigger_mode)
-  if (!identical(tm, "poisson"))
-    return(unsupported(cell, paste0(
-      "The simulated grid covers event- and location-triggered designs, where the ",
-      "prompt count is random. A fixed schedule plans the count instead, which the ",
-      "grid never simulated. Run a live simulation for this design.")))
+  refs <- if (!is.null(G$refs)) G$refs else stats::setNames(list(G$ref),
+                                                partition_key(3L, "poisson"))
+  ref  <- refs[[partition_key(mdl, tm)]]
+  g    <- g[g$model == mdl & g$trigger_mode == tm, ]
+  if (is.null(ref) || !nrow(g))
+    return(unsupported(cell, if (identical(tm, "fixed")) paste0(
+      "A fixed schedule is not in the precomputed table for this model. A planned ",
+      "count is a different data-generating mechanism, not a corner of the ",
+      "triggered grid, so there is nothing here to interpolate toward. ",
+      "Run a live simulation.") else paste0(
+      "Model ", mdl, " is not in the precomputed table. It is a different fitted ",
+      "model powering a different coefficient, so it is answered by live simulation.")))
 
-  off <- off_ref(cell, ref)
+  live <- active_ref_keys(mdl)
+  off  <- off_ref(cell, ref, live)
 
-  # --- answer policy -------------------------------------------------------
+  # --- 2. answer policy ----------------------------------------------------
   if (length(off) > 1)
     return(unsupported(cell, paste0(
       "The grid has no cell with two levers off reference at once (here: ",
       paste(off, collapse = ", "), "). Answering would assume the levers act ",
       "separably — an assumption this study never tested. Run a live simulation.")))
 
-  slab <- if (length(off) == 0) g[g$grid == "primary", ]
+  slab <- if (length(off) == 0) g[g$grid == base_slab_name(mdl, tm), ]
           else g[g$.n_off == 1 & !near(g[[off]], ref[[off]]), ]
-  if (!nrow(slab)) return(unsupported(cell, paste0("No slab varies ", off, ".")))
+  if (!nrow(slab)) return(unsupported(cell, paste0(
+    off, " = ", cell[[off]], " was never simulated for this model (the only ",
+    "off-reference slabs are for the paper's model on a triggered schedule). ",
+    "Run a live simulation.")))
 
   # a single off-REF lever must sit exactly on a simulated level
   if (length(off) == 1) {
@@ -224,7 +350,7 @@ lookup_cell <- function(cell, G) {
   # Interpolation error is 0 at the ends and worst mid-bracket; 4w(1-w) is that
   # shape, scaled to the LOO p90. Reported separately from MCSE — they are
   # different kinds of uncertainty and must never be merged into one number.
-  se <- LOO_P90_N * 4 * w * (1 - w)
+  se <- loo_p90_n(as.character(lo$grid[1])) * 4 * w * (1 - w)
 
   finish(out, "grid_interp", "N", 2L, se,
          paste(rownames(lo), rownames(hi), sep = "+"))

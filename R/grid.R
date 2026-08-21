@@ -70,6 +70,126 @@ secondary_grids <- function() {
   do.call(rbind, lapply(list(s1, s2, s3, s4, s5), function(g) g[, cols]))
 }
 
+# =============================================================================
+# TOOL-SUPPORT GRIDS (not part of the paper's protocol)
+#
+# The grids above are the study's. The two below exist only so the planning tool
+# can answer from a precomputed table instead of simulating in the researcher's
+# browser at R = 100. They are NOT preregistered, are NOT analysed by analyze.R,
+# and must never be reported as study results: they carry `grid` labels of their
+# own ("model_<id>", "fixed_<id>") so a slab can never be mistaken for primary
+# or S1-S5.
+#
+# Everything else about them is deliberately identical to the primary grid — the
+# same lever set, the same levels, the same reference values — so the tool's
+# answer policy (snap D/lambda/cv, interpolate N, refuse two-levers-off-REF)
+# carries over unchanged.
+# =============================================================================
+
+# Reference effect per model, in outcome-SD units.
+#
+# Each model powers a DIFFERENT coefficient (see models.R): the within-person or
+# AR slope (beta1), the Level-2 main effect (beta_l2), or the cross-level
+# interaction (beta_cross). One shared number cannot serve all three.
+#
+# The value below is chosen by the same criterion that set beta1 = 0.2 for the
+# primary grid — the grid must SPAN the 0.8 decision boundary, so that "how many
+# participants do I need?" has an answer inside it. Measured at the weakest
+# (N=20, rate=1, D=7) and strongest (N=150, rate=4, D=28) corners at R = 100:
+#
+#   model  coefficient          weak -> strong     note
+#     1    beta_l2    = 0.6     0.15 -> 0.96       dummy; 0.3 gave 0.07 -> 0.38
+#     2    beta_l2    = 0.3     0.12 -> 0.98
+#     4    beta1      = 0.2     0.26 -> 1.00
+#     5    beta_cross = 0.2     0.03 -> 0.95       dummy; 0.1 gave 0.03 -> 0.53
+#     6    beta_cross = 0.1     0.04 -> 1.00
+#     7    beta_cross = 0.1     0.05 -> 0.98
+#     8    beta_cross = 0.1     0.07 -> 1.00
+#     9    beta1      = 0.2     0.27 -> 1.00
+#    10    beta_cross = 0.2     0.04 -> 0.99       dummy; 0.1 gave 0.02 -> 0.47
+#    11    beta_cross = 0.1     0.08 -> 0.98
+#
+# The three that needed a larger value (1, 5, 10) are exactly the models whose
+# Level-2 predictor is a balanced DUMMY carrying a random slope. A balanced dummy
+# has SD(W) = 0.5, so the same coefficient is half the standardised effect of the
+# N(0,1) continuous predictor its twin model uses — doubling it equates the two.
+# (Model 6 is also a dummy but has a FIXED slope, whose precision gain already
+# offsets the halving, so it spans the boundary at 0.1 and would ceiling at 0.2.)
+MODEL_REF_EFFECT <- list(
+  `1`  = list(beta_l2    = 0.6),
+  `2`  = list(beta_l2    = 0.3),
+  `3`  = list(beta1      = 0.2),   # the paper's model, for completeness
+  `4`  = list(beta1      = 0.2),
+  `5`  = list(beta_cross = 0.2),
+  `6`  = list(beta_cross = 0.1),
+  `7`  = list(beta_cross = 0.1),
+  `8`  = list(beta_cross = 0.1),
+  `9`  = list(beta1      = 0.2),
+  `10` = list(beta_cross = 0.2),
+  `11` = list(beta_cross = 0.1)
+)
+
+# Attach the effect columns for a model. beta1 always carries a value (it is a
+# structural lever of the DGM, not only a target), so it stays at REF unless the
+# model is powered on it; beta_l2 / beta_cross default to default_pars() and are
+# set explicitly here so every shipped cell records the effect it was run at.
+with_model_effects <- function(g, id) {
+  eff <- MODEL_REF_EFFECT[[as.character(id)]]
+  if (is.null(eff)) stop("no reference effect defined for model ", id)
+  g$model      <- as.integer(id)
+  g$beta1      <- if (!is.null(eff$beta1))      eff$beta1      else REF$beta1
+  g$beta_l2    <- if (!is.null(eff$beta_l2))    eff$beta_l2    else 0.3
+  g$beta_cross <- if (!is.null(eff$beta_cross)) eff$beta_cross else 0.1
+  g
+}
+
+# --- Per-model grids: the primary lever set, for the ten models the paper's ---
+# --- grid does not cover. Model 3 is excluded — `primary` already is it. ------
+MODELS_TO_FILL <- c(1, 2, 4, 5, 6, 7, 8, 9, 10, 11)
+
+models_grid <- function(ids = MODELS_TO_FILL) {
+  do.call(rbind, lapply(ids, function(id) {
+    g <- .expand(N = c(20, 40, 60, 90, 120, 150),
+                 lambda_bar = c(1, 2, 4),
+                 cv = c(0.3, 0.9),
+                 D = c(7, 14, 21, 28))
+    g$cap <- REF$cap; g$compliance <- REF$compliance; g$decay <- REF$decay
+    g$phi <- REF$phi; g$trigger_link <- REF$trigger_link
+    g$trigger_mode <- "poisson"
+    g <- with_model_effects(g, id)
+    g$grid <- paste0("model_", id)
+    g
+  }))
+}
+
+# --- Fixed (time-contingent) schedules, all eleven models --------------------
+# A planned schedule is a different data-generating mechanism, not a corner of
+# the triggered grid: the count is SET (k prompts/day for everyone) and thinned
+# by compliance, so it is Binomial around a planned maximum rather than Poisson.
+# Between-person rate variation therefore does not exist here — `cv` is inert and
+# recorded as 0 rather than left at a triggered value it does not mean.
+#
+# The lever levels differ from the triggered grid on purpose. A fixed schedule
+# delivers k*D prompts to everyone, so power saturates far earlier: measured at
+# R = 100, N=150/D=28 reads 1.000 at every k from 1 to 8, while N=20/D=7 moves
+# 0.07 -> 0.50 -> 0.70 across k = 1 -> 3 -> 5. The decision boundary therefore
+# lives at SHORT durations, which is why D reaches down to 3 days (burst designs)
+# rather than starting at 7.
+fixed_grid <- function(ids = c(3, MODELS_TO_FILL)) {
+  do.call(rbind, lapply(sort(ids), function(id) {
+    g <- .expand(N = c(20, 40, 60, 90, 120, 150),
+                 lambda_bar = c(1, 2, 3, 5, 8),   # planned prompts per day
+                 D = c(3, 7, 14, 28))
+    g$cv <- 0                                     # inert in fixed mode
+    g$cap <- REF$cap; g$compliance <- REF$compliance; g$decay <- REF$decay
+    g$phi <- REF$phi; g$trigger_link <- REF$trigger_link
+    g$trigger_mode <- "fixed"
+    g <- with_model_effects(g, id)
+    g$grid <- paste0("fixed_", id)
+    g
+  }))
+}
+
 # --- Smoke grid: 4 cells, for a fast end-to-end correctness check ------------
 smoke_grid <- function() {
   g <- .expand(N = c(30, 120), lambda_bar = 2, cv = c(0.3, 0.9), D = 14)

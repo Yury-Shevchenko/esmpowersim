@@ -47,8 +47,20 @@ say("engine    : %d files -> app/R/ (%s)", length(ENGINE), paste(ENGINE, collaps
 src <- file.path(RC, c("primary.csv", "secondary.csv"))
 if (!all(file.exists(src))) stop("build-app: confirmatory results missing: ",
                                  paste(src[!file.exists(src)], collapse = ", "))
+
+# Tool-support slabs (per-model + fixed-schedule). Optional by design: the app
+# builds and ships without them, just with less instant coverage — so a partial
+# or in-progress run can never block a release. What IS present is announced, so
+# a silently-half-built table cannot pass for a complete one.
+TOOL <- file.path(SIM, "results-tool")
+tool_src <- if (dir.exists(TOOL)) sort(list.files(TOOL, "\\.csv$", full.names = TRUE)) else character(0)
+tool_src <- tool_src[!grepl("\\.part\\.csv$", tool_src)]
+say("tool slabs: %d found in results-tool/%s", length(tool_src),
+    if (length(tool_src)) paste0(" (", paste(sub("\\.csv$", "", basename(tool_src)), collapse = ", "), ")") else "")
+
+source(file.path(SIM, "R", "models.R"))          # active_ref_keys() reads the model registry
 source(file.path(SIM, "R", "lookup.R"))          # load_grid() does the invariant checks
-G <- load_grid(src)                              # errors loudly if the grid is malformed
+G <- load_grid(c(src, tool_src))                 # errors loudly if the grid is malformed
 grid <- G$cells
 grid$.n_off <- NULL
 
@@ -72,6 +84,14 @@ meta <- c(
   sprintf('  "git_sha": "%s",', git_sha),
   sprintf('  "master_seed": %s,', grid$master_seed[1]),
   sprintf('  "cells": %d,', nrow(grid)),
+  # What the table can answer INSTANTLY, as data rather than prose: which models
+  # and which schedule types have a slab at all. The UI reads this to decide
+  # whether to offer the grid, so a half-built table degrades honestly instead of
+  # promising coverage it does not have.
+  sprintf('  "models_triggered": [%s],',
+          paste(sort(unique(grid$model[grid$trigger_mode == "poisson"])), collapse = ", ")),
+  sprintf('  "models_fixed": [%s],',
+          paste(sort(unique(grid$model[grid$trigger_mode == "fixed"])), collapse = ", ")),
   '  "slabs": {',
   paste0(sprintf('    "%s": {"cells": %d, "R": %d}', slabs$grid,
                  as.integer(table(grid$grid)[slabs$grid]), as.integer(slabs$R_total)),
@@ -81,7 +101,15 @@ meta <- c(
   '    "dims": ["N"],',
   '    "snapped": ["D", "lambda_bar", "cv"],',
   sprintf('    "loo_p90_N_power_all": %s,', LOO_P90_N),
-  '    "note": "LOO over primary: N p90 2.16 pts; D 5.56; log-lambda 3.99. D and lambda are snapped because interpolating them reaches 14 and 12 points of error."',
+  # Per-slab, because the interpolator's honest error band differs by partition:
+  # the paper's grid is the best-behaved at 2.16 points and the moderation
+  # models reach 4.01. Shipping only the paper's number would have the app
+  # quoting Model 3's precision on every other model's answer.
+  '    "loo_p90_N_by_slab": {',
+  paste0(sprintf('      "%s": %s', names(LOO_P90_N_BY_SLAB), unlist(LOO_P90_N_BY_SLAB)),
+         collapse = ",\n"),
+  '    },',
+  '    "note": "LOO over each base slab (tools/loo.R): N p90 0.57-4.01 pts by partition; on primary D 5.56 and log-lambda 3.99. D, lambda and cv are snapped because interpolating them reaches 14 and 12 points of error."',
   '  }',
   '}'
 )

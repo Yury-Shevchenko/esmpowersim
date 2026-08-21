@@ -4,10 +4,14 @@
 #   Rscript tests/app-fixed.R      (needs shiny; run from the repo root)
 #
 # Guards the bug that shipped past unit tests and only showed in the browser:
-# design_type and engine were separate inputs, so estimate() could observe
-# design_type=fixed while engine still said "lookup" and freeze on a stale grid
-# refusal. testServer exercises the real reactive graph, which plain function
-# tests do not.
+# design_type and engine were separate inputs, so estimate() could observe one
+# while the other still said something else and freeze on a stale answer.
+# testServer exercises the real reactive graph, which plain function tests do not.
+#
+# The contract CHANGED once the fixed-schedule slabs were simulated: a planned
+# schedule on a simulated cell is now answered from the grid, instantly, instead
+# of always falling through to a live run. The race guard is kept, re-aimed at
+# what can still fall through — a design the table does not cover.
 # =============================================================================
 suppressWarnings(suppressMessages(library(shiny)))
 # build the appdir engine copies if they are not present (CI runs build first)
@@ -17,31 +21,49 @@ fail <- 0L
 ok <- function(cond, msg) if (!isTRUE(cond)) { fail <<- fail + 1L; cat("  FAIL:", msg, "\n") }
 
 testServer("app", {
+  # k=3/day for 14 days at N=40 is a simulated cell of the fixed slab.
   base <- list(mode = "single", power_def = "all", N = 40, D = 14, lambda_bar = 3,
                cap = 0, compliance = 0.75, decay = 0, phi = 0.3, beta1 = 0.2,
                seed = 20260709, R = 60)
 
-  # 1. fixed is simulate-mode even with engine at its default (the race)
+  # 1. a simulated fixed design is answered from the grid, not sent to a run
   do.call(session$setInputs, c(list(design_type = "fixed"), base))
-  ok(isTRUE(sim_mode()), "fixed design must be sim_mode regardless of the engine radio")
-  ok(estimate()$source == "awaiting", "before a run, fixed shows 'awaiting', not a grid refusal")
-  ok(!supported(), "not 'supported' until the run (tiles blank)")
-
-  # 2. the run produces a balanced-ish Binomial-thinned simulation
-  session$setInputs(run = 1)
+  ok(isTRUE(grid_capable()), "a fixed schedule has a precomputed slab")
+  ok(!isTRUE(sim_mode()), "a simulated fixed cell must NOT need a live run")
   r <- estimate()
-  ok(r$source == "simulated", "after run, source is 'simulated'")
+  ok(r$source == "grid_exact", sprintf("fixed design answers from the grid (got %s)", r$source))
+  ok(isTRUE(supported()), "tiles populate immediately for a covered fixed design")
+  # the mechanism is still the planned one: k*D*compliance = 3*14*0.75 = 31.5,
+  # and a planned schedule thins Binomially, so the spread stays tight.
   ok(abs(r$mean_n - 31.5) < 1.5, sprintf("mean_n ~31.5 (got %.2f)", r$mean_n))
   ok(r$sd_n < 3.5, sprintf("planned schedule => tight sd_n (got %.2f)", r$sd_n))
 
-  # 3. switching back to a triggered design restores instant grid lookup.
-  #    Use an on-grid cell (lambda 2, not the fixed-mode 3, which is off-grid).
+  # 2. asking for a live run of the same design still works, and agrees with the
+  #    grid. This is the real check on the new slabs: the table and the engine
+  #    must describe the same design, or the lookup is quietly answering a
+  #    different question than the one the button would run.
+  session$setInputs(engine = "simulate", show_advanced = TRUE)
+  ok(isTRUE(sim_mode()), "choosing 'simulate' must route a fixed design to a live run")
+  session$setInputs(run = 1)
+  s <- estimate()
+  ok(s$source == "simulated", sprintf("after run, source is 'simulated' (got %s)", s$source))
+  ok(abs(s$power_all - r$power_all) < 0.15,
+     sprintf("live run must agree with the grid (grid %.3f vs live %.3f)",
+             r$power_all, s$power_all))
+
+  # 3. the race guard, re-aimed: a design OFF the fixed grid (60 days was never
+  #    simulated) must route to simulation rather than freeze on a stale answer.
+  session$setInputs(engine = "lookup", D = 60)
+  ok(isTRUE(sim_mode()) || estimate()$source %in% c("unsupported", "awaiting", "simulated"),
+     "an off-grid fixed design must not be answered from the table")
+
+  # 4. switching back to a triggered design restores instant grid lookup.
   session$setInputs(design_type = "poisson", engine = "lookup",
                     N = 60, D = 14, lambda_bar = 2, cv = 0.3)
   ok(estimate()$source == "grid_exact", "triggered design returns to instant grid lookup")
 
-  # 4. the cell a fixed design builds zeroes the inapplicable levers
-  session$setInputs(design_type = "fixed")
+  # 5. the cell a fixed design builds zeroes the inapplicable levers
+  session$setInputs(design_type = "fixed", D = 14)
   cell <- build_cell()
   ok(identical(as.character(cell$trigger_mode), "fixed"), "cell carries trigger_mode=fixed")
   ok(cell$cv == 0 && cell$trigger_link == 0, "cv and trigger_link zeroed in fixed mode")
