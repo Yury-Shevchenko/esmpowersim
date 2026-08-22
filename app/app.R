@@ -60,6 +60,42 @@ levels_for <- function(model, trigger_mode) {
 # The effect the partition was simulated at, for the coefficient this model
 # powers. The slider defaults here so the common case is an exact grid hit;
 # move it and the lookup refuses (correctly) and offers a live run.
+# Can these simulated levels be stepped onto by a slider? A Shiny slider walks
+# min, min+step, min+2*step, ... so it can only land on an arithmetic sequence.
+# Returns the LONGEST arithmetic run ending at the largest level, which lets an
+# irregular low end fall off the slider rather than forcing every control back to
+# radio buttons: fixed durations are 3, 7, 14, 21, 28, and the 7-28 tail steps by
+# 7 exactly like the triggered grid does, while the 3-day burst is still in the
+# table for anyone who deep-links or simulates it.
+#
+# Sliders are only offered where every stop is a real simulated cell. Snapping is
+# not an option here and that is measured, not cautious: across the fixed grid the
+# duration 14 -> 28 gap moves power by 15.6 points at p90 and the rate 1 -> 2 gap
+# by 61, so a slider that quietly moved the user to a neighbouring cell would be
+# inventing exactly the error this tool refuses to interpolate.
+# A tail only counts if it is REPRESENTATIVE: at least three stops and at most
+# one level left behind. Without that guard a partially-built grid degrades badly
+# rather than honestly — the original fixed levels {1,2,3,5,8} have a tail of
+# {5,8}, which would render as a two-stop slider silently hiding the three
+# lowest rates. Radio buttons showing every level beat a slider showing a third
+# of them, so that case falls back.
+MIN_SLIDER_STOPS <- 3L
+MAX_SLIDER_DROPPED <- 1L
+arith_tail <- function(v) {
+  v <- sort(unique(as.numeric(v)))
+  if (length(v) < MIN_SLIDER_STOPS) return(NULL)
+  for (i in seq_len(length(v) - 1)) {
+    w <- v[i:length(v)]
+    if (length(w) < MIN_SLIDER_STOPS) return(NULL)
+    if (length(v) - length(w) > MAX_SLIDER_DROPPED) return(NULL)
+    d <- diff(w)
+    if (all(abs(d - d[1]) < 1e-9))
+      return(list(min = w[1], max = w[length(w)], step = d[1],
+                  values = w, dropped = setdiff(v, w)))
+  }
+  NULL
+}
+
 # Replications behind a partition's base slab. The study grid ran at R = 2000 and
 # the tool-support slabs at R = 1000, so the precision the UI claims has to be
 # read from the data rather than written into the copy.
@@ -295,20 +331,30 @@ server <- function(input, output, session) {
         # triggered case does, so each stop is an exact lookup rather than a
         # refusal. The levels are the fixed slab's own — a planned schedule
         # saturates early, so they run shorter and denser than the triggered set.
-        # radioButtons, not selectInput: a selectize value does not reliably
-        # round-trip under shinylive/webR (same reason the model chooser uses
-        # radios), and the levels are too unevenly spaced for a stepped slider.
-        pick <- function(id, label, lv_vals, dflt) radioButtons(id, label, inline = TRUE,
-          choices = stats::setNames(as.character(lv_vals), lv_vals),
-          selected = as.character(nearest(isolate(input[[id]]), lv_vals) %||% dflt))
+        ak <- arith_tail(lv$lambda); ad <- arith_tail(lv$D)
+        # Slider where the levels can be stepped onto; radio buttons only where
+        # they cannot (a selectize value does not reliably round-trip under
+        # shinylive/webR, which is why the model chooser uses radios too).
+        ctl <- function(id, label, a, lv_vals, dflt) {
+          if (is.null(a)) return(radioButtons(id, label, inline = TRUE,
+            choices = stats::setNames(as.character(lv_vals), lv_vals),
+            selected = as.character(nearest(isolate(input[[id]]), lv_vals) %||% dflt)))
+          sliderInput(id, label, a$min, a$max,
+                      nearest(isolate(input[[id]]), a$values) %||%
+                        nearest(dflt, a$values), step = a$step)
+        }
+        burst <- if (!is.null(ad) && length(ad$dropped))
+          sprintf(" Durations of %s day(s) are simulated too, below the slider's range — reach them with a link (?D=%s) or a live run.",
+                  paste(ad$dropped, collapse = ", "), ad$dropped[1])
         tagList(
-          pick("lambda_bar", "Prompts per day (planned)", lv$lambda, 3),
-          pick("D", "Duration (days)", lv$D, 14),
+          ctl("lambda_bar", "Prompts per day (planned)", ak, lv$lambda, 3),
+          ctl("D", "Duration (days)", ad, lv$D, 14),
           helpText("Everyone is scheduled the same number of prompts. Compliance and ",
                    "fatigue below still thin them, so the realised count is ",
                    tags$b("Binomial"), " — random, but around a planned maximum. That ",
                    "missingness is the part PowerAnalysisIL does not model. ",
-                   "Each option is a simulated design, so the answer is exact."))
+                   "Every stop is a simulated design, so the answer is exact.",
+                   burst))
       } else {
         tagList(
           sliderInput("lambda_bar", "Prompts per day (planned)", 1, 8, 3, step = 1),

@@ -175,11 +175,40 @@ models_grid <- function(ids = MODELS_TO_FILL) {
 # 0.07 -> 0.50 -> 0.70 across k = 1 -> 3 -> 5. The decision boundary therefore
 # lives at SHORT durations, which is why D reaches down to 3 days (burst designs)
 # rather than starting at 7.
+#
+# ROW ORDER IS FROZEN, and that is load-bearing rather than tidy. A cell's seed
+# comes from (master_seed, cell_id, rep) where cell_id is its ROW INDEX in this
+# grid (run.R, run_grid). Rebuilding the grid with the levels merged into one
+# expand.grid would renumber every row, so the 1,320 cells already simulated
+# would no longer be reproducible from their own grid definition — the CSVs and
+# the code would silently disagree about which dataset any given number came
+# from. So the original block is emitted first, byte-identical, and later levels
+# are APPENDED. Rows 1-120 keep the indices they were run at; new levels take
+# 121-240. Anything added in future must be appended for the same reason.
+#
+# The added levels exist so the planner can offer real SLIDERS instead of radio
+# buttons: a slider needs evenly spaced stops, and the original levels
+# (k = 1,2,3,5,8 and D = 3,7,14,28) have none. With k = 1..8 and D = 7,14,21,28
+# the app can step exactly onto simulated cells, so every stop is an exact
+# lookup — no snapping, which the measured gradients rule out here anyway
+# (D 14 -> 28 moves power by 15.6 points at p90, far past what this tool is
+# willing to guess across).
+FIXED_N     <- c(20, 40, 60, 90, 120, 150)
+FIXED_K_V1  <- c(1, 2, 3, 5, 8)      # as first run
+FIXED_D_V1  <- c(3, 7, 14, 28)       # as first run
+FIXED_K_NEW <- c(4, 6, 7)            # completes the integer rate slider 1-8
+FIXED_D_NEW <- 21                    # completes the step-7 duration slider 7-28
+
 fixed_grid <- function(ids = c(3, MODELS_TO_FILL)) {
   do.call(rbind, lapply(sort(ids), function(id) {
-    g <- .expand(N = c(20, 40, 60, 90, 120, 150),
-                 lambda_bar = c(1, 2, 3, 5, 8),   # planned prompts per day
-                 D = c(3, 7, 14, 28))
+    g <- rbind(
+      # rows 1-120 — the original block, order untouched
+      .expand(N = FIXED_N, lambda_bar = FIXED_K_V1, D = FIXED_D_V1),
+      # rows 121-150 — the new duration at the original rates
+      .expand(N = FIXED_N, lambda_bar = FIXED_K_V1, D = FIXED_D_NEW),
+      # rows 151-240 — the new rates at every duration
+      .expand(N = FIXED_N, lambda_bar = FIXED_K_NEW, D = c(FIXED_D_V1, FIXED_D_NEW))
+    )
     g$cv <- 0                                     # inert in fixed mode
     g$cap <- REF$cap; g$compliance <- REF$compliance; g$decay <- REF$decay
     g$phi <- REF$phi; g$trigger_link <- REF$trigger_link
@@ -189,6 +218,10 @@ fixed_grid <- function(ids = c(3, MODELS_TO_FILL)) {
     g
   }))
 }
+
+# Rows of fixed_grid() that were already simulated in the first run. The delta
+# run starts after these.
+FIXED_V1_ROWS <- length(FIXED_N) * length(FIXED_K_V1) * length(FIXED_D_V1)
 
 # --- Smoke grid: 4 cells, for a fast end-to-end correctness check ------------
 smoke_grid <- function() {

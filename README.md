@@ -207,8 +207,8 @@ Rscript -e "shiny::runApp('app', launch.browser = TRUE)"   # needs shiny >= 1.8
 
 Two engines behind one contract ([`R/lookup.R`](R/lookup.R)):
 
-- **Lookup (default, instant).** Reads the precomputed grid (**3,264 cells**: the study's 504 at
-  R = 2,000/1,000, plus 2,760 tool-support cells at R = 1,000 covering the other ten models and
+- **Lookup (default, instant).** Reads the precomputed grid (**4,584 cells**: the study's 504 at
+  R = 2,000/1,000, plus 4,080 tool-support cells at R = 1,000 covering the other ten models and
   fixed schedules for all eleven). An exact hit carries MCSE ≤ ~1.6 points. This is not a cheap
   approximation of a live run — it is **~3× more precise *and* instant**, and the UI says so, because the
   instinct is the opposite. The badge over each answer names the R behind that particular row.
@@ -230,7 +230,16 @@ measured value, never the best.
 **Fixed schedules got their own lever levels**, because a planned schedule saturates far earlier than a
 triggered one — at N = 150 over 28 days, power reads 1.000 at every rate from 1 to 8 prompts/day. Their
 grid therefore runs from 3-day bursts up to 8 prompts/day, where the decision boundary actually lives,
-rather than reusing the triggered grid's 7–28 days at 1–4 triggers/day.
+rather than reusing the triggered grid's 7–28 days at 1–4 triggers/day: rates 1–8 and durations
+3, 7, 14, 21, 28.
+
+Those levels are dense and regular **so the planner can offer sliders**. A Shiny slider steps along an
+arithmetic sequence, so it can only land on simulated cells if the levels form one — and snapping to a
+neighbour is not an option here, measured rather than assumed: across the fixed grid the 14 → 28 day gap
+moves power by 15.6 points at p90 and the 1 → 2 prompts/day gap by 61. The app derives each slider's
+stops from the shipped grid (`arith_tail`), so every stop is an exact lookup; where a partition's levels
+cannot be stepped onto it falls back to radio buttons rather than guessing. The 3-day burst sits below a
+step-7 duration slider and stays reachable by deep-link (`?D=3`) or a live run.
 
 The headline is **power counting non-convergence as a failure to detect**, with the
 convergence-conditional number a click away. They diverge by up to 42 points (at N=150, D=7, rate=1:

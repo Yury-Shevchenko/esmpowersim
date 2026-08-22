@@ -46,20 +46,47 @@ log() { printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" | tee -a "$LOG"; 
 
 log "=== run-tool-grids start (R=$R_REPS seed=$SEED cores=$CORES) ==="
 
+# A slab is not simply present-or-absent: a grid can gain levels (see the frozen
+# row order in grid.R), in which case the existing CSV is a correct PREFIX of the
+# new grid and only the appended rows need running. Comparing counts turns that
+# into an ordinary resume, so extending a grid never means re-running cells that
+# have not changed.
 for slab in $SLABS; do
   csv="$OUT/$slab.csv"
-  if [ -f "$csv" ]; then
-    log "skip  $slab (already present)"
+  want=$(./repro/rscript-4.3.1.sh R/run.R "--grid=$slab" --count 2>/dev/null | tr -d '[:space:]')
+  have=0
+  [ -f "$csv" ] && have=$(( $(wc -l < "$csv") - 1 ))
+
+  if [ "$have" -eq "$want" ]; then
+    log "skip  $slab (complete: $have/$want cells)"
     continue
   fi
-  log "start $slab"
+  if [ "$have" -gt "$want" ]; then
+    log "FAIL  $slab has $have cells but the grid defines $want — refusing to guess; investigate"
+    continue
+  fi
+
+  first=$(( have + 1 ))
+  if [ "$have" -gt 0 ]; then
+    log "start $slab (extending: rows $first-$want, keeping the $have already run)"
+  else
+    log "start $slab (rows 1-$want)"
+  fi
   t0=$(date +%s)
   # Write to a .part file and move on success, so an interrupted slab never
   # leaves a truncated CSV that the next run would happily skip.
   if nice -n 5 ./repro/rscript-4.3.1.sh R/run.R \
         "--grid=$slab" "--R=$R_REPS" "--seed=$SEED" "--cores=$CORES" \
+        "--rows=$first:$want" \
         "--out=$OUT/$slab.part.csv" >> "$LOG" 2>&1; then
-    mv "$OUT/$slab.part.csv" "$csv"
+    if [ "$have" -gt 0 ]; then
+      # Append without the header. The grid emits new levels AFTER the original
+      # block, so concatenation reproduces the full grid's row order exactly.
+      tail -n +2 "$OUT/$slab.part.csv" >> "$csv"
+      rm -f "$OUT/$slab.part.csv"
+    else
+      mv "$OUT/$slab.part.csv" "$csv"
+    fi
     # write_run_meta() strips the extension before appending, so the metadata for
     # <slab>.part.csv lands at <slab>.part.run-meta.txt — NOT <slab>.part.csv.run-meta.txt.
     [ -f "$OUT/$slab.part.run-meta.txt" ] &&

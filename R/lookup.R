@@ -91,13 +91,13 @@ active_ref_keys <- function(model) {
 # reach 4.01 — so Model 3's number applied globally would understate the
 # interpolation uncertainty of a cross-level interaction by about half.
 LOO_P90_N_BY_SLAB <- list(
-  `primary`  = 0.0216,
-  `model_1`  = 0.0303, `model_2`  = 0.0352, `model_4`  = 0.0057, `model_5` = 0.0378,
-  `model_6`  = 0.0327, `model_7`  = 0.0401, `model_8`  = 0.0298, `model_9` = 0.0144,
+  `primary` = 0.0216,
+  `model_1` = 0.0303, `model_2` = 0.0352, `model_4` = 0.0057, `model_5` = 0.0378,
+  `model_6` = 0.0327, `model_7` = 0.0401, `model_8` = 0.0298, `model_9` = 0.0144,
   `model_10` = 0.0333, `model_11` = 0.0377,
-  `fixed_1`  = 0.0283, `fixed_2`  = 0.0355, `fixed_3`  = 0.0198, `fixed_4` = 0.0105,
-  `fixed_5`  = 0.0353, `fixed_6`  = 0.0266, `fixed_7`  = 0.0371, `fixed_8` = 0.0199,
-  `fixed_9`  = 0.0210, `fixed_10` = 0.0307, `fixed_11` = 0.0348
+  `fixed_1` = 0.0338, `fixed_2` = 0.0394, `fixed_3` = 0.0163, `fixed_4` = 0.0058,
+  `fixed_5` = 0.0353, `fixed_6` = 0.0270, `fixed_7` = 0.0402, `fixed_8` = 0.0192,
+  `fixed_9` = 0.0154, `fixed_10` = 0.0395, `fixed_11` = 0.0344
 )
 # The paper's value, kept as a named constant because the manuscript quotes it.
 LOO_P90_N <- LOO_P90_N_BY_SLAB[["primary"]]

@@ -62,7 +62,31 @@ testServer("app", {
                     N = 60, D = 14, lambda_bar = 2, cv = 0.3)
   ok(estimate()$source == "grid_exact", "triggered design returns to instant grid lookup")
 
-  # 5. the cell a fixed design builds zeroes the inapplicable levers
+  # 5. the fixed-mode design controls must be SLIDERS, not radio buttons.
+  #    They were radios while the fixed levels were unevenly spaced (a Shiny
+  #    slider can only step onto an arithmetic sequence); the extra rates and
+  #    the 21-day duration were simulated specifically so the controls could
+  #    match triggered mode. If a fixed slab ever goes missing the app falls
+  #    back to radios by design, so this asserts the levels are still complete.
+  session$setInputs(design_type = "fixed", engine = "lookup", D = 14, lambda_bar = 3)
+  di <- paste(as.character(output$design_inputs), collapse = "")
+  ok(grepl("irs|js-range-slider|slider", di), "fixed design inputs render as sliders")
+  ok(!grepl('type="radio"', di, fixed = TRUE), "fixed design inputs are not radio buttons")
+  ok(!grepl("<select", di, fixed = TRUE), "fixed design inputs contain no dropdown")
+  # every stop the slider can reach must be an exact cell — that is the whole
+  # reason the levels were filled in rather than snapped
+  for (k in 1:8) {
+    session$setInputs(lambda_bar = k)
+    ok(estimate()$source == "grid_exact",
+       sprintf("prompts/day = %d is an exact grid cell", k))
+  }
+  for (d in c(7, 14, 21, 28)) {
+    session$setInputs(D = d)
+    ok(estimate()$source == "grid_exact",
+       sprintf("duration = %d days is an exact grid cell", d))
+  }
+
+  # 6. the cell a fixed design builds zeroes the inapplicable levers
   session$setInputs(design_type = "fixed", D = 14)
   cell <- build_cell()
   ok(identical(as.character(cell$trigger_mode), "fixed"), "cell carries trigger_mode=fixed")

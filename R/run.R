@@ -41,6 +41,8 @@ parse_args <- function() {
        R     = as.integer(get("R", "200")),
        seed  = as.integer(get("seed", "20260709")),
        cores = as.integer(get("cores", "1")),
+       rows  = get("rows", ""),
+       count = any(grepl("^--count$", a)),
        out   = get("out", ""))
 }
 
@@ -55,10 +57,12 @@ parse_args <- function() {
 # and reuse the same seed stream, making the models' errors correlated rather
 # than independent. The offset is derived from the slab name (not a CLI flag) so
 # a caller cannot get it wrong or forget it.
-run_grid <- function(grid, seed, R, cores, cell_offset = 0L) {
+run_grid <- function(grid, seed, R, cores, cell_offset = 0L, cell_ids = NULL) {
   n <- nrow(grid)
+  if (is.null(cell_ids)) cell_ids <- seq_len(n)
+  stopifnot(length(cell_ids) == n)
   one <- function(i) {
-    r <- run_cell(grid[i, , drop = FALSE], seed, R, cell_id = cell_offset + i)
+    r <- run_cell(grid[i, , drop = FALSE], seed, R, cell_id = cell_offset + cell_ids[i])
     message(sprintf("  cell %3d/%d  N=%3d D=%2d rate=%g cv=%g -> power=%.3f (MCSE %.3f) conv=%.2f  n=%.1f",
                     i, n, r$N, r$D, r$lambda_bar, r$cv,
                     r$power, r$mcse_power, r$conv_rate, r$mean_n))
@@ -106,12 +110,35 @@ main <- function() {
   g    <- resolve_grid(args$grid)
   grid <- g$cells
 
-  message(sprintf("[esm-power-sim] grid=%s  cells=%d  R=%d  seed=%d  cores=%d%s",
-                  args$grid, nrow(grid), args$R, args$seed, args$cores,
+  # --count prints how many cells the grid defines and exits. Lets a driver ask
+  # "is this slab complete?" without hardcoding sizes that change when a grid is
+  # extended (tools/run-tool-grids.sh uses it to decide whether to extend).
+  if (isTRUE(args$count)) { cat(nrow(grid), "\n"); return(invisible(nrow(grid))) }
+
+  # --rows=a:b runs a CONTIGUOUS SUBSET while keeping each cell's original row
+  # index as its cell_id, so a subset run is bit-identical to the same rows of a
+  # full run. That is what makes it safe to extend a grid: append the new levels
+  # (see grid.R), run only the appended rows, and concatenate onto the existing
+  # CSV — no re-running 26 h of cells that have not changed, and no seeds moving
+  # underneath the cells that were already published.
+  sel <- seq_len(nrow(grid))
+  if (nzchar(args$rows)) {
+    ab <- as.integer(strsplit(args$rows, ":", fixed = TRUE)[[1]])
+    if (length(ab) != 2L || anyNA(ab) || ab[1] < 1L || ab[2] > nrow(grid) || ab[1] > ab[2])
+      stop("--rows must be a:b within 1:", nrow(grid), " (got ", args$rows, ")")
+    sel <- ab[1]:ab[2]
+  }
+
+  message(sprintf("[esm-power-sim] grid=%s  cells=%d%s  R=%d  seed=%d  cores=%d%s",
+                  args$grid, length(sel),
+                  if (length(sel) != nrow(grid)) sprintf(" of %d (rows %d-%d)",
+                      nrow(grid), min(sel), max(sel)) else "",
+                  args$R, args$seed, args$cores,
                   if (g$offset) sprintf("  cell_id offset=%d", g$offset) else ""))
   t0 <- proc.time()[["elapsed"]]
 
-  res <- run_grid(grid, args$seed, args$R, args$cores, cell_offset = g$offset)
+  res <- run_grid(grid[sel, , drop = FALSE], args$seed, args$R, args$cores,
+                  cell_offset = g$offset, cell_ids = sel)
   res$master_seed <- args$seed
   res$R_requested <- args$R
 
