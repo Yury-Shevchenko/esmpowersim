@@ -82,5 +82,49 @@ testServer("app", {
      "the single-design method must not render in curve view")
 })
 
+# --- the escape hatch: a design the grid refuses must still be runnable -----
+# Regression test. The run button was gated on whether a SLAB EXISTS for the
+# (model, schedule) partition, which was a fair proxy for "the grid can answer
+# this" only while one partition had a slab. Once every partition had one, the
+# gate was always open, so any refused design — a lever off its simulated
+# values, a duration outside the range, a bracket that did not converge — left
+# the user reading "run a live simulation" with no way to run one. The engine
+# could answer all of them.
+testServer("app", {
+  base <- list(mode = "single", design_type = "fixed", N = 40, D = 14,
+               lambda_bar = 3, cv = 0, eff = 0.2, cap = 0, compliance = 0.75,
+               decay = 0, phi = 0.3, power_def = "all", target_power = 0.8,
+               seed = 20260709, R = 40, show_advanced = FALSE)
+  do.call(session$setInputs, base)
+  ok(estimate()$source == "grid_exact", "the baseline design is answered by the grid")
+  ok(!isTRUE(can_simulate()), "no run button while the grid answers")
+
+  # every distinct way the grid can refuse must offer the run
+  refusals <- list(
+    "a lever off its simulated values" = list(compliance = 0.85),
+    "a duration outside the range"     = list(D = 45),
+    "an unsimulated effect"            = list(eff = 0.45),
+    "N outside the hull"               = list(N = 250),
+    "across the convergence cliff"     = list(lambda_bar = 1, D = 9))
+  for (nm in names(refusals)) {
+    do.call(session$setInputs, base)
+    do.call(session$setInputs, refusals[[nm]])
+    ok(estimate()$source == "unsupported", sprintf("%s: the grid refuses", nm))
+    ok(isTRUE(can_simulate()), sprintf("%s: the run button must be offered", nm))
+  }
+
+  # and the run must actually reach the screen, or the button does nothing
+  do.call(session$setInputs, base)
+  session$setInputs(compliance = 0.85)
+  session$setInputs(run = 1)
+  r <- estimate()
+  ok(r$source == "simulated", sprintf("a completed run replaces the refusal (got %s)", r$source))
+  ok(isTRUE(supported()), "the simulated result counts as supported")
+  ok(!is.na(r$power_all) && r$power_all >= 0 && r$power_all <= 1, "it carries a power estimate")
+  # ... and must not linger once the design changes underneath it
+  session$setInputs(compliance = 0.90)
+  ok(estimate()$source != "simulated", "a stale run is discarded when the design changes")
+})
+
 cat(if (fail == 0) "\nLAYOUT: ALL PASSED\n" else sprintf("\nLAYOUT: %d FAILURE(S)\n", fail))
 quit(status = if (fail == 0) 0 else 1)

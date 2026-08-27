@@ -650,7 +650,24 @@ server <- function(input, output, session) {
   # read them directly. This replaces a JS expression that re-implemented
   # sim_mode() from raw input ids — which had to be kept in sync by hand and
   # could not see the grid at all, so it could not know which models are covered.
-  output$js_sim_mode <- reactive(sim_mode())
+  # Whether the RUN BUTTON should be offered. This is deliberately NOT sim_mode():
+  #
+  # grid_capable() asks whether a slab exists for this (model, schedule). That
+  # was a fair proxy for "the grid can answer this" while only the paper's model
+  # on a triggered schedule had one — but every partition has a slab now, so it
+  # is always true, and a design the grid REFUSES (a lever off its simulated
+  # values, a duration outside the range, a bracket that did not converge) left
+  # the user on a refusal that says "run a live simulation" with no button to do
+  # it. The engine could answer every one of those; the UI just never offered.
+  #
+  # So: offer the run whenever the grid did not answer, not merely when no slab
+  # exists. It cannot be sim_mode() itself, because estimate() reads sim_mode()
+  # to decide whether to return a simulated result — making sim_mode() depend on
+  # estimate() would close a reactive loop.
+  can_simulate <- reactive(
+    !isTRUE(examples_open()) &&
+    (sim_mode() || identical(estimate()$source, "unsupported")))
+  output$js_sim_mode <- reactive(can_simulate())
   output$js_grid_capable <- reactive(grid_capable())
   outputOptions(output, "js_sim_mode", suspendWhenHidden = FALSE)
   outputOptions(output, "js_grid_capable", suspendWhenHidden = FALSE)
@@ -732,7 +749,19 @@ server <- function(input, output, session) {
   estimate <- reactive({
     req(ready())
     if (sim_mode()) { r <- simVal(); if (is.null(r)) awaiting_row() else r }
-    else lookup_cell(as.list(build_cell()), G)
+    else {
+      lk <- lookup_cell(as.list(build_cell()), G)
+      # A finished live run answers a design the GRID refused. Without this the
+      # run button — which is now offered on exactly those designs — would store
+      # a result that nothing ever displayed, so pressing it appeared to do
+      # nothing at all. Safe against staleness because simVal() is cleared by
+      # the observer below on any change to the design, mode or engine.
+      if (identical(lk$source, "unsupported")) {
+        r <- simVal()
+        if (!is.null(r)) return(r)
+      }
+      lk
+    }
   })
   # "awaiting" and "unsupported" both mean "no number to show yet", so the tiles
   # blank in both — but the provenance line distinguishes them.
@@ -1247,7 +1276,10 @@ server <- function(input, output, session) {
 
   # In curve view, a live-simulated curve only exists after the user runs it.
   output$curve_status <- renderUI({
-    if (identical(input$mode, "curve") && !grid_backed() && is.null(curveVal()))
+    # Same blind spot as the run button had: a design the grid refuses is
+    # grid_backed() but produces no curve, so the prompt has to consider both.
+    if (identical(input$mode, "curve") && (!grid_backed() || !isTRUE(supported())) &&
+        is.null(curveVal()))
       div(style = "color:#1b6ca8;margin:10px 0",
           badge("▷ Ready to simulate", "#1b6ca8"),
           tags$span(style = "margin-left:8px",
