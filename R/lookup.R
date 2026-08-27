@@ -102,6 +102,31 @@ LOO_P90_N_BY_SLAB <- list(
 # The paper's value, kept as a named constant because the manuscript quotes it.
 LOO_P90_N <- LOO_P90_N_BY_SLAB[["primary"]]
 
+# p90 of |interpolation error| along D, per slab, from tools/loo.R. A slab is
+# only allowed to interpolate D if it HAS an entry here: the duration axis is
+# dense enough to interpolate in the fixed-schedule slabs (levels every day to 7,
+# then 10/14/17/21/24/28) and is NOT in the study grid, whose four levels sit 7
+# days apart and were measured at 5.56 points p90. Absence therefore means "snap
+# or refuse", exactly as before — the feature switches on only where the evidence
+# for it exists.
+LOO_P90_D_BY_SLAB <- list(
+  `fixed_1` = 0.0272, `fixed_2`  = 0.0254, `fixed_3`  = 0.0155, `fixed_4` = 0.0026,
+  `fixed_5` = 0.0281, `fixed_6`  = 0.0280, `fixed_7`  = 0.0308, `fixed_8` = 0.0209,
+  `fixed_9` = 0.0130, `fixed_10` = 0.0271, `fixed_11` = 0.0301
+)
+
+# Interpolating D across a bracket that did not converge is the one thing this
+# axis does badly, and it does it spectacularly: at 1 prompt/day the model is
+# unfittable below ~7 observations per person and then abruptly fine (D = 7 gives
+# 0% convergence and zero power; D = 14 gives 100% and 0.93). A straight line
+# through that cliff was wrong by up to 83 points. Refusing instead caps the
+# error at 5.7 and, more importantly, tells the researcher the true thing: the
+# design is too sparse to estimate. Measured sweep (fixed_1, 528 interior cells):
+#   guard  0.00 -> p90 9.00, max 83.53   |  0.70 -> 2.96, max 12.23
+#          0.50 -> p90 3.33, max 12.23   |  0.80 -> 2.72, max  5.68
+#   above 0.80 buys nothing (0.90 and 0.95 are identical to 0.80).
+D_INTERP_MIN_CONV <- 0.80
+
 # An unmeasured slab falls back to the WORST measured value, never the paper's:
 # the error of a partition nobody has run LOO on is unknown, and the safe reading
 # of unknown is "as bad as the worst we have seen", not "as good as our best".
@@ -208,6 +233,8 @@ off_ref <- function(cell, ref, keys = REF_KEYS) {
   keys[!same]
 }
 
+loo_p90_d <- function(slab) LOO_P90_D_BY_SLAB[[slab]]   # NULL => not allowed
+
 # ---------------------------------------------------------------------------
 # The columns run_cell() produces, so the UI can stay agnostic about provenance.
 RUN_CELL_COLS <- c(DESIGN_KEYS, PARTITION_KEYS,
@@ -286,9 +313,9 @@ lookup_cell <- function(cell, G) {
     slab <- slab[near(slab[[off]], cell[[off]]), ]
   }
 
-  # D, lambda_bar and cv are snapped, never interpolated (LOO: up to 14 / 12
-  # points of error, and cv has only two levels — see header).
-  for (k in c("D", "lambda_bar", "cv")) {
+  # lambda_bar and cv are snapped, never interpolated (LOO: up to 12 points of
+  # error, and cv has only two levels — see header).
+  for (k in c("lambda_bar", "cv")) {
     lv <- unique(slab[[k]])
     if (!any(near(cell[[k]], lv)))
       return(unsupported(cell, paste0(
@@ -296,6 +323,80 @@ lookup_cell <- function(cell, G) {
         "). Interpolating it is not accurate enough; pick a level or simulate.")))
     slab <- slab[near(slab[[k]], cell[[k]]), ]
   }
+  if (!nrow(slab)) return(unsupported(cell, "No matching cells in the grid."))
+
+  # --- D: exact level, or interpolate between the two that bracket it -------
+  # Done by RECURSION rather than a hand-written bilinear blend: ask this same
+  # function for the answer at the two bracketing durations — each of which
+  # already handles the N axis, the slab choice and every guard — then blend the
+  # two results. One interpolation code path instead of two, and the N logic
+  # below cannot drift out of step with the D logic here.
+  slab_nm <- as.character(slab$grid[1])
+  Ds <- sort(unique(slab$D))
+  if (!any(near(cell$D, Ds))) {
+    p90d <- loo_p90_d(slab_nm)
+    if (is.null(p90d))
+      return(unsupported(cell, paste0(
+        "D = ", cell$D, " is not a simulated level (", paste(Ds, collapse = ", "),
+        "). This grid's durations are too far apart to interpolate between; ",
+        "pick a level or simulate.")))
+    if (cell$D < min(Ds) || cell$D > max(Ds))
+      return(unsupported(cell, paste0(
+        "D = ", cell$D, " is outside the simulated range (", min(Ds), "-", max(Ds),
+        "). Extrapolating is unsafe: the surface is strongly nonlinear at the edges.")))
+
+    lo_d <- max(Ds[Ds < cell$D]); hi_d <- min(Ds[Ds > cell$D])
+    c_lo <- cell; c_lo$D <- lo_d
+    c_hi <- cell; c_hi$D <- hi_d
+    a <- lookup_cell(c_lo, G); b <- lookup_cell(c_hi, G)
+    if (identical(a$source, "unsupported")) return(a)
+    if (identical(b$source, "unsupported")) return(b)
+
+    # The one thing this axis does badly — see D_INTERP_MIN_CONV. A bracket that
+    # did not converge is not a number to draw a line through; it is a design
+    # that cannot be estimated, and saying so is the useful answer.
+    if (min(a$conv_rate, b$conv_rate, na.rm = TRUE) < D_INTERP_MIN_CONV)
+      return(unsupported(cell, sprintf(paste0(
+        "A %g-day design at this rate sits on the edge of estimability: the ",
+        "nearest simulated durations (%g and %g days) converged %.0f%% and %.0f%% ",
+        "of the time, so there is no stable surface to interpolate along. Each ",
+        "person contributes too few observations to fit the model. Shorten the ",
+        "gap by adding prompts per day, extend the study, or simulate it live."),
+        cell$D, lo_d, hi_d, 100 * a$conv_rate, 100 * b$conv_rate)))
+
+    w  <- (cell$D - lo_d) / (hi_d - lo_d)
+    out <- a
+    out$D <- cell$D
+    blend_logit <- function(col, Rcol) {
+      la <- emp_logit(a[[col]], a[[Rcol]]); lb <- emp_logit(b[[col]], b[[Rcol]])
+      plogis(la + w * (lb - la))
+    }
+    out$power     <- blend_logit("power", "R_total")
+    out$power_all <- blend_logit("power_all", "R_total")
+    out$conv_rate <- blend_logit("conv_rate", "R_total")
+    out$coverage  <- blend_logit("coverage", "R_total")
+    out$below_k   <- blend_logit("below_k", "R_total")
+    for (k in c("mean_n", "sd_n", "type_m"))
+      out[[k]] <- exp(log(a[[k]]) + w * (log(b[[k]]) - log(a[[k]])))
+    for (k in c("type_s", "bias", "rel_bias", "emp_se", "rmse", "ci_width"))
+      out[[k]] <- NA_real_
+    out$R_converged <- NA_integer_
+    out$mcse_power     <- sqrt(out$power * (1 - out$power) / out$R_total)
+    out$mcse_power_all <- sqrt(out$power_all * (1 - out$power_all) / out$R_total)
+
+    # Interpolation uncertainty ADDS across axes rather than combining in
+    # quadrature: it is a property of the grid's resolution, not a random error,
+    # so two resolutions cannot cancel and the honest figure is the sum.
+    se_n <- if (is.na(a$interp_se_power)) 0 else a$interp_se_power
+    out$interp_se_power <- se_n + p90d * 4 * w * (1 - w)
+    out$source      <- "grid_interp"
+    out$interp_dims <- paste(c(a$interp_dims, "D")[nzchar(c(a$interp_dims, "D"))], collapse = "+")
+    out$n_corners   <- a$n_corners + b$n_corners
+    out$source_rows <- paste(a$source_rows, b$source_rows, sep = "+")
+    out$reason      <- NA_character_
+    return(out)
+  }
+  slab <- slab[near(slab$D, cell$D), ]
   if (!nrow(slab)) return(unsupported(cell, "No matching cells in the grid."))
 
   # --- N: exact hit, or interpolate between its two bracketing levels -------

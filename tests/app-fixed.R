@@ -85,6 +85,30 @@ testServer("app", {
     ok(estimate()$source == "grid_exact",
        sprintf("duration = %d days is an exact grid cell", d))
   }
+  # The duration slider now moves a day at a time, so most stops are BETWEEN
+  # simulated levels and must come back interpolated-and-labelled rather than
+  # snapped to a neighbour or refused.
+  session$setInputs(lambda_bar = 3)
+  interp <- 0
+  for (d in 1:28) {
+    session$setInputs(D = d)
+    e <- estimate()
+    ok(e$source %in% c("grid_exact", "grid_interp"),
+       sprintf("every day of the slider must answer (day %d gave %s)", d, e$source))
+    if (identical(e$source, "grid_interp")) {
+      interp <- interp + 1
+      ok(e$interp_se_power > 0, sprintf("day %d must carry an interpolation SE", d))
+    }
+  }
+  ok(interp > 0, "the slider must actually exercise interpolation")
+
+  # ... and the sparse corner must be refused with a reason, not interpolated
+  # across the convergence cliff.
+  session$setInputs(lambda_bar = 1, N = 150, D = 9)
+  g <- estimate()
+  ok(g$source == "unsupported" && grepl("estimab", g$reason),
+     "a design across the convergence cliff must be refused, and say why")
+  session$setInputs(lambda_bar = 3, N = 40, D = 14)
 
   # 6. the cell a fixed design builds zeroes the inapplicable levers
   session$setInputs(design_type = "fixed", D = 14)

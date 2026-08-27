@@ -89,8 +89,18 @@ for slab in $SLABS; do
     fi
     # write_run_meta() strips the extension before appending, so the metadata for
     # <slab>.part.csv lands at <slab>.part.run-meta.txt — NOT <slab>.part.csv.run-meta.txt.
-    [ -f "$OUT/$slab.part.run-meta.txt" ] &&
-      mv "$OUT/$slab.part.run-meta.txt" "$OUT/$slab.run-meta.txt"
+    # APPEND rather than replace: a slab that has been extended was produced by
+    # more than one run, and a data release should carry the provenance of each
+    # of them, not only the most recent.
+    if [ -f "$OUT/$slab.part.run-meta.txt" ]; then
+      if [ -f "$OUT/$slab.run-meta.txt" ]; then
+        { echo; echo "# ---- extension run (rows $first-$want) ----"; } >> "$OUT/$slab.run-meta.txt"
+        cat "$OUT/$slab.part.run-meta.txt" >> "$OUT/$slab.run-meta.txt"
+        rm -f "$OUT/$slab.part.run-meta.txt"
+      else
+        mv "$OUT/$slab.part.run-meta.txt" "$OUT/$slab.run-meta.txt"
+      fi
+    fi
     log "done  $slab ($(( ($(date +%s) - t0) / 60 )) min)"
   else
     log "FAIL  $slab — see $LOG; continuing with the rest"

@@ -96,6 +96,14 @@ arith_tail <- function(v) {
   NULL
 }
 
+# Can this partition interpolate along D? If so the duration control is a plain
+# day-by-day slider over the simulated range, because a stop no longer has to BE
+# a simulated level — only to sit between two of them. Where it cannot (the study
+# grid, whose four durations are 7 days apart), the stepped-onto-levels slider
+# stays, so nothing about the paper's model changes.
+d_interpolates <- function(model, trigger_mode)
+  !is.null(LOO_P90_D_BY_SLAB[[base_slab_name(model, trigger_mode)]])
+
 # Replications behind a partition's base slab. The study grid ran at R = 2000 and
 # the tool-support slabs at R = 1000, so the precision the UI claims has to be
 # read from the data rather than written into the copy.
@@ -331,7 +339,11 @@ server <- function(input, output, session) {
         # triggered case does, so each stop is an exact lookup rather than a
         # refusal. The levels are the fixed slab's own — a planned schedule
         # saturates early, so they run shorter and denser than the triggered set.
-        ak <- arith_tail(lv$lambda); ad <- arith_tail(lv$D)
+        ak <- arith_tail(lv$lambda)
+        # Duration: a day-by-day slider once the slab is dense enough to
+        # interpolate between levels, otherwise the stepped-onto-levels one.
+        d_free <- d_interpolates(model_id(), "fixed")
+        ad <- if (d_free) NULL else arith_tail(lv$D)
         # Slider where the levels can be stepped onto; radio buttons only where
         # they cannot (a selectize value does not reliably round-trip under
         # shinylive/webR, which is why the model chooser uses radios too).
@@ -346,14 +358,22 @@ server <- function(input, output, session) {
         burst <- if (!is.null(ad) && length(ad$dropped))
           sprintf(" Durations of %s day(s) are simulated too, below the slider's range — reach them with a link (?D=%s) or a live run.",
                   paste(ad$dropped, collapse = ", "), ad$dropped[1])
+        d_ctl <- if (d_free)
+          sliderInput("D", "Duration (days)", min(lv$D), max(lv$D),
+                      max(min(lv$D), min(max(lv$D), n1(isolate(input$D), 14))), step = 1)
+        else ctl("D", "Duration (days)", ad, lv$D, 14)
         tagList(
           ctl("lambda_bar", "Prompts per day (planned)", ak, lv$lambda, 3),
-          ctl("D", "Duration (days)", ad, lv$D, 14),
+          d_ctl,
           helpText("Everyone is scheduled the same number of prompts. Compliance and ",
                    "fatigue below still thin them, so the realised count is ",
                    tags$b("Binomial"), " — random, but around a planned maximum. That ",
                    "missingness is the part PowerAnalysisIL does not model. ",
-                   "Every stop is a simulated design, so the answer is exact.",
+                   if (d_free)
+                     paste0("Durations that were simulated answer exactly; the days between them ",
+                            "are interpolated, and the result says which. A design too sparse to ",
+                            "fit is refused rather than guessed at.")
+                   else "Every stop is a simulated design, so the answer is exact.",
                    burst))
       } else {
         tagList(

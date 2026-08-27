@@ -234,5 +234,87 @@ if (!length(tool_csv)) {
               nrow(tc), if (fail == f0) "PASS" else "FAIL", worst_t))
 }
 
+# --- 14. interpolating along D, where the grid is dense enough ------------
+# D is snapped by default: the study grid's four durations sit 7 days apart and
+# interpolating them costs 5.56 points at p90. The fixed-schedule slabs are dense
+# enough to interpolate, so the policy is per slab (LOO_P90_D_BY_SLAB) and turns
+# on only where it has been measured. Skipped until such a slab exists.
+f0 <- fail
+# G is primary+secondary only; the D-band slabs live in results-tool/, so ask
+# there rather than at the study grid.
+tool <- file.path(SIM, "results-tool")
+dslabs <- if (dir.exists(tool))
+  intersect(names(LOO_P90_D_BY_SLAB),
+            sub("\\.csv$", "", basename(list.files(tool, "\\.csv$")))) else character(0)
+have_d <- length(dslabs) > 0
+if (!have_d) {
+  cat("14. D interpolation                                SKIP (no slab has a D band)\n")
+} else {
+  paths <- c(file.path(RC, c("primary.csv", "secondary.csv")),
+             setdiff(list.files(tool, "\\.csv$", full.names = TRUE),
+                     list.files(tool, "\\.part\\.csv$", full.names = TRUE)))
+  GT <- load_grid(paths)
+  nm <- dslabs[1]
+  b  <- GT$cells[GT$cells$grid == nm, ]
+  mdl <- b$model[1]; tm <- b$trigger_mode[1]
+
+  # (a) a slab WITHOUT a measured band must still refuse — the study grid must
+  #     not silently acquire a policy that was never validated for it.
+  pc <- as.list(p[1, c(DESIGN_KEYS, PARTITION_KEYS)]); pc$D <- 10
+  r <- lookup_cell(pc, GT)
+  ok(r$source == "unsupported" && grepl("too far apart", r$reason),
+     "the study grid must still refuse an off-level D")
+
+  # (b) hold out a simulated duration and rebuild it through the SHIPPED path.
+  #     Holding out a level forces a double-width gap, so this is stricter than
+  #     anything a user can ask for.
+  Ds   <- sort(unique(b$D))
+  hold <- Ds[ceiling(length(Ds) / 2)]
+  tmpd <- tempfile(); dir.create(tmpd)
+  ps <- vapply(paths, function(f) {
+    d <- read.csv(f, stringsAsFactors = FALSE)
+    if (identical(as.character(d$grid[1]), nm)) d <- d[d$D != hold, ]
+    o <- file.path(tmpd, basename(f)); write.csv(d, o, row.names = FALSE); o
+  }, character(1))
+  Gh <- load_grid(ps)
+  errs <- c(); guarded <- 0
+  for (i in which(b$D == hold)) {
+    r0 <- b[i, ]
+    rr <- lookup_cell(as.list(r0[c(DESIGN_KEYS, PARTITION_KEYS)]), Gh)
+    if (identical(rr$source, "unsupported")) { guarded <- guarded + 1; next }
+    ok(rr$source == "grid_interp", "an off-level D must come back as grid_interp")
+    ok(rr$interp_se_power > 0, "an interpolated D must carry a non-zero interpolation SE")
+    errs <- c(errs, abs(rr$power_all - r0$power_all) * 100)
+  }
+  unlink(tmpd, recursive = TRUE)
+  ok(length(errs) > 0, "the hold-out must answer at least some cells")
+  # The bar is the band already accepted for N (p90 up to 4.02 points). If D
+  # interpolation cannot meet the standard the tool already lives by, it should
+  # not be enabled at all.
+  ok(quantile(errs, .9) <= 4.02,
+     sprintf("held-out D=%g: p90 error %.2f pts must be within the N band (4.02)",
+             hold, quantile(errs, .9)))
+  ok(max(errs) <= 12,
+     sprintf("held-out D=%g: max error %.2f pts", hold, max(errs)))
+
+  # (c) the convergence guard must actually fire somewhere, and say why.
+  cliff <- b[b$conv_rate < 0.5, ]
+  if (nrow(cliff)) {
+    cc <- as.list(cliff[1, c(DESIGN_KEYS, PARTITION_KEYS)])
+    Dl <- sort(unique(b$D)); d0 <- cc$D
+    nxt <- Dl[Dl > d0]
+    if (length(nxt)) {
+      cc$D <- (d0 + nxt[1]) / 2
+      if (!any(abs(cc$D - Dl) < 1e-9)) {
+        rg <- lookup_cell(cc, GT)
+        ok(rg$source == "unsupported" && grepl("estimab", rg$reason),
+           "interpolating across a non-converged bracket must refuse, and explain")
+      }
+    }
+  }
+  cat(sprintf("14. D interpolation on %-14s          %s (p90 %.2f pts, %d guarded)\n",
+              nm, if (fail == f0) "PASS" else "FAIL", quantile(errs, .9), guarded))
+}
+
 cat("\n", if (fail == 0) "ALL TESTS PASSED" else paste(fail, "FAILURE(S)"), "\n")
 quit(status = if (fail == 0) 0 else 1)

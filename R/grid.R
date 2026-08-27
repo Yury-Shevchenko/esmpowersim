@@ -198,6 +198,14 @@ FIXED_K_V1  <- c(1, 2, 3, 5, 8)      # as first run
 FIXED_D_V1  <- c(3, 7, 14, 28)       # as first run
 FIXED_K_NEW <- c(4, 6, 7)            # completes the integer rate slider 1-8
 FIXED_D_NEW <- 21                    # completes the step-7 duration slider 7-28
+# Third pass: durations dense where the power surface bends and sparse where it
+# is flat, so D can be INTERPOLATED rather than snapped and the slider can read
+# every day from 1 to 28. Measured on the pass-2 grid, interpolating D costs
+# 27.8 points at p90 across an 11-day gap at short durations but only 2.3 across
+# a 14-day gap at long ones — the curvature, and therefore the need for levels,
+# is all at the short end. Cost runs the other way (a cell scales with D), so
+# the levels that matter most are also the cheapest to buy.
+FIXED_D_V3 <- c(1, 2, 4, 5, 6, 10, 17, 24)
 
 fixed_grid <- function(ids = c(3, MODELS_TO_FILL)) {
   do.call(rbind, lapply(sort(ids), function(id) {
@@ -207,7 +215,9 @@ fixed_grid <- function(ids = c(3, MODELS_TO_FILL)) {
       # rows 121-150 — the new duration at the original rates
       .expand(N = FIXED_N, lambda_bar = FIXED_K_V1, D = FIXED_D_NEW),
       # rows 151-240 — the new rates at every duration
-      .expand(N = FIXED_N, lambda_bar = FIXED_K_NEW, D = c(FIXED_D_V1, FIXED_D_NEW))
+      .expand(N = FIXED_N, lambda_bar = FIXED_K_NEW, D = c(FIXED_D_V1, FIXED_D_NEW)),
+      # rows 241-624 — the in-between durations, at every rate
+      .expand(N = FIXED_N, lambda_bar = sort(c(FIXED_K_V1, FIXED_K_NEW)), D = FIXED_D_V3)
     )
     g$cv <- 0                                     # inert in fixed mode
     g$cap <- REF$cap; g$compliance <- REF$compliance; g$decay <- REF$decay

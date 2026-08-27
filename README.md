@@ -207,8 +207,8 @@ Rscript -e "shiny::runApp('app', launch.browser = TRUE)"   # needs shiny >= 1.8
 
 Two engines behind one contract ([`R/lookup.R`](R/lookup.R)):
 
-- **Lookup (default, instant).** Reads the precomputed grid (**4,584 cells**: the study's 504 at
-  R = 2,000/1,000, plus 4,080 tool-support cells at R = 1,000 covering the other ten models and
+- **Lookup (default, instant).** Reads the precomputed grid (**8,808 cells**: the study's 504 at
+  R = 2,000/1,000, plus 8,304 tool-support cells at R = 1,000 covering the other ten models and
   fixed schedules for all eleven). An exact hit carries MCSE ≤ ~1.6 points. This is not a cheap
   approximation of a live run — it is **~3× more precise *and* instant**, and the UI says so, because the
   instinct is the opposite. The badge over each answer names the R behind that particular row.
@@ -231,15 +231,29 @@ measured value, never the best.
 triggered one — at N = 150 over 28 days, power reads 1.000 at every rate from 1 to 8 prompts/day. Their
 grid therefore runs from 3-day bursts up to 8 prompts/day, where the decision boundary actually lives,
 rather than reusing the triggered grid's 7–28 days at 1–4 triggers/day: rates 1–8 and durations
-3, 7, 14, 21, 28.
+1–7 daily, then 10, 14, 17, 21, 24, 28.
 
 Those levels are dense and regular **so the planner can offer sliders**. A Shiny slider steps along an
 arithmetic sequence, so it can only land on simulated cells if the levels form one — and snapping to a
 neighbour is not an option here, measured rather than assumed: across the fixed grid the 14 → 28 day gap
 moves power by 15.6 points at p90 and the 1 → 2 prompts/day gap by 61. The app derives each slider's
 stops from the shipped grid (`arith_tail`), so every stop is an exact lookup; where a partition's levels
-cannot be stepped onto it falls back to radio buttons rather than guessing. The 3-day burst sits below a
-step-7 duration slider and stays reachable by deep-link (`?D=3`) or a live run.
+cannot be stepped onto it falls back to radio buttons rather than guessing.
+
+**Duration is the exception, and it is interpolated rather than snapped** — but only in the fixed-schedule
+slabs, and only because their density was measured first. Those slabs run every day to 7 and then every
+3–4, which puts leave-one-out error at **p90 1.3–3.1 points** across the eleven of them, inside the band
+already accepted for N (0.6–4.0). The study grid, whose four durations sit 7 days apart, measures 5.56 and
+therefore keeps snapping: a slab may interpolate D only if it has a measured entry in `LOO_P90_D_BY_SLAB`,
+so the policy switches on where the evidence is and nowhere else. The duration slider is consequently a
+plain 1–28 day-by-day control on a fixed schedule, and stepped onto simulated levels everywhere else.
+
+**Interpolating D across a bracket that did not converge is refused, not interpolated.** At one prompt per
+day the model is unfittable below ~7 observations per person and then abruptly fine — 7 days gives 0%
+convergence and zero power, 14 days gives 100% and 0.93. Drawing a line through that cliff was wrong by up
+to 83 points; declining to (`D_INTERP_MIN_CONV = 0.80`, chosen from a measured sweep, not rounded to taste)
+caps it at 5.7 and tells the researcher the true thing — the design is too sparse to estimate. The refusal
+is surgical: at 1/day it declines 8–13 days and answers again from 16.
 
 The headline is **power counting non-convergence as a failure to detect**, with the
 convergence-conditional number a click away. They diverge by up to 42 points (at N=150, D=7, rate=1:

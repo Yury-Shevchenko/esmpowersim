@@ -134,3 +134,53 @@ cat("LOO_P90_N_BY_SLAB <- list(\n")
 cat(paste(sprintf('  `%s` = %.4f', names(summ), unlist(summ) / 100), collapse = ",\n"), "\n)\n")
 cat(sprintf("\nworst slab: %s at %.2f pts | paper's grid (primary): %.2f pts\n",
             names(summ)[which.max(unlist(summ))], max(unlist(summ)), summ[["primary"]]))
+
+# =============================================================================
+# Per-slab D-interpolation error.
+#
+# Measured UNDER THE GUARD the lookup actually applies (D_INTERP_MIN_CONV): a
+# bracket that did not converge is refused rather than interpolated, so counting
+# its error here would describe a code path that does not exist. Slabs whose
+# durations are too far apart to interpolate at all simply do not qualify — the
+# printed list is what belongs in LOO_P90_D_BY_SLAB, and a slab's ABSENCE from
+# it is what keeps lookup.R snapping instead of interpolating.
+# =============================================================================
+MIN_CONV <- 0.80
+MIN_LEVELS <- 8L   # too few durations and "dense enough to interpolate" is a fiction
+
+cat("\n\n=== D-interpolation error by slab (power_all, percentage points) ===\n")
+cat(sprintf("guard: both brackets must have converged >= %.0f%%\n\n", 100*MIN_CONV))
+cat(sprintf("%-14s %6s %7s %7s %7s %9s\n","slab","n","median","p90","max","guarded"))
+dsumm <- list()
+for (nm in names(SLABS)) {
+  d <- SLABS[[nm]]; lv <- sort(unique(d$D))
+  if (length(lv) < MIN_LEVELS) {
+    cat(sprintf("%-14s  (only %d durations — not dense enough to interpolate)\n", nm, length(lv)))
+    next
+  }
+  e <- c(); guarded <- 0L
+  for (v in lv[-c(1,length(lv))]) {
+    lo <- max(lv[lv<v]); hi <- min(lv[lv>v])
+    for (i in which(d$D==v)) {
+      r <- d[i,]
+      a <- d[d$D==lo & d$N==r$N & d$lambda_bar==r$lambda_bar,]
+      b <- d[d$D==hi & d$N==r$N & d$lambda_bar==r$lambda_bar,]
+      if (nrow(a)!=1 || nrow(b)!=1) next
+      if (min(a$conv_rate, b$conv_rate) < MIN_CONV) { guarded <- guarded + 1L; next }
+      w <- (v-lo)/(hi-lo)
+      pr <- plogis(emp_logit(a$power_all,a$R_total) +
+                   w*(emp_logit(b$power_all,b$R_total)-emp_logit(a$power_all,a$R_total)))
+      e <- c(e, abs(pr-r$power_all)*100)
+    }
+  }
+  if (!length(e)) next
+  p90 <- unname(quantile(e,.9)); dsumm[[nm]] <- p90
+  cat(sprintf("%-14s %6d %7.2f %7.2f %7.2f %9d\n", nm, length(e), median(e), p90, max(e), guarded))
+}
+if (length(dsumm)) {
+  cat("\n--- as an R literal for lookup.R ---\n")
+  cat("LOO_P90_D_BY_SLAB <- list(\n")
+  cat(paste(sprintf('  `%s` = %.4f', names(dsumm), unlist(dsumm)/100), collapse=",\n"), "\n)\n")
+  cat(sprintf("\nworst: %s at %.2f pts | N band for comparison: 0.58-4.02 pts\n",
+              names(dsumm)[which.max(unlist(dsumm))], max(unlist(dsumm))))
+}
