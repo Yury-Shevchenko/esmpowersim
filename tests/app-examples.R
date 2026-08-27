@@ -22,8 +22,10 @@ ok <- function(cond, msg) if (!isTRUE(cond)) { fail <<- fail + 1L; cat("  FAIL:"
 
 n_ex <- 0L; below <- 0L
 testServer("app", {
-  session$setInputs(mode = "examples", power_def = "all", target_power = 0.8,
+  # the gallery is its own state now, not a value of `mode`
+  session$setInputs(open_examples = 1, power_def = "all", target_power = 0.8,
                     cap = 0, compliance = 0.75, decay = 0, seed = 20260709, R = 60)
+  ok(isTRUE(examples_open()), "the examples entry point opens the gallery")
   ok(nzchar(paste(as.character(output$gallery), collapse = "")), "the gallery renders")
   n_ex <<- length(EX)
   ok(n_ex == 10L, sprintf("the gallery offers ten examples (found %d)", n_ex))
@@ -31,8 +33,9 @@ testServer("app", {
   for (nm in names(EX)) {
     e <- EX[[nm]]
     # press the button exactly as a user would
-    session$setInputs(mode = "examples")
+    examples_open(TRUE)
     apply_example(e)
+    examples_open(FALSE)
     session$setInputs(mode = "single")
     # the controls the example claims to set must actually hold those values
     session$setInputs(N = e$N, D = e$D, lambda_bar = e$lambda, eff = e$eff,

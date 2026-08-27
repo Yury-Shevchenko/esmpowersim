@@ -29,6 +29,17 @@ ok(grepl("nav-tabs|tabsetPanel|data-toggle=\"tab\"", ui),
    "secondary content renders as a tab strip")
 for (lbl in c("Reading this result", "How it was computed", "Share or cite", "Glossary"))
   ok(grepl(lbl, ui, fixed = TRUE), sprintf("tab present: %s", lbl))
+# The View control offers exactly two ways of showing a design. The examples are
+# a way of CHOOSING one, so they must not appear among them.
+ok(!grepl('value="examples"', ui, fixed = TRUE),
+   "Examples must not be an option in the View control")
+ok(grepl('value="curve" checked', ui, fixed = TRUE) ||
+   grepl('value="curve"[^>]*checked', ui),
+   "the power curve is the default view")
+ok(grepl('value="fixed" checked', ui, fixed = TRUE) ||
+   grepl('value="fixed"[^>]*checked', ui),
+   "a fixed schedule is the default sampling design")
+ok(grepl("qdesc", ui, fixed = TRUE), "the View options carry explanations, not just names")
 # The tabset must NOT carry an id: with one, tab state round-trips to the
 # server, which is the pattern that is unreliable under shinylive/webR.
 ok(!grepl('id="tabset', ui), "the tabset must not need a server round-trip")

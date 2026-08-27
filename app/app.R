@@ -246,12 +246,31 @@ ui <- fluidPage(
 
       # ===== 2. Sampling design =============================================
       tags$div(class = "sec", "2 · Sampling design"),
+      # A planned schedule is the design most ESM studies actually run, so it is
+      # the default. The triggered case is the one this tool exists for, and the
+      # option sits directly above it with the reason attached.
       radioButtons("design_type", "How are prompts triggered?",
-        c("Event or location — the count is random" = "poisson",
-          "Fixed schedule — the count is planned"   = "fixed")),
-      radioButtons("mode", "View",
-                   c("Single design" = "single", "Power curve over N" = "curve",
-                     "Examples" = "examples"), inline = TRUE),
+        c("Fixed schedule — the count is planned"   = "fixed",
+          "Event or location — the count is random" = "poisson"),
+        selected = "fixed"),
+
+      # ===== 3. View ========================================================
+      # Was a pair of inline radios reading only "Single design / Power curve
+      # over N", which says what the views are called but not what they answer.
+      # Rendered as cards with a line of explanation each, the same treatment
+      # the research-question chooser above already gets.
+      tags$div(class = "sec", "3 · What to show"),
+      radioButtons("mode", NULL, selected = "curve",
+        choiceNames = list(
+          tagList(tags$div(class = "qtitle", "Power curve over N"),
+                  tags$div(class = "qdesc",
+                    "How power grows with sample size \u2014 read off the number of ",
+                    "participants your design needs to hit the target.")),
+          tagList(tags$div(class = "qtitle", "A single design"),
+                  tags$div(class = "qdesc",
+                    "Power, convergence and the spread of observations per person ",
+                    "for one specific design."))),
+        choiceValues = list("curve", "single")),
       sliderInput("N", "Participants (N)", 10, 300, 60, step = 5),
       conditionalPanel("input.mode == 'curve'",
         sliderInput("Ncurve", "N range for the curve", 10, 300, c(20, 150), step = 10)),
@@ -260,7 +279,7 @@ ui <- fluidPage(
       uiOutput("design_inputs"),
 
       # ===== 3. Effect of interest + target power ===========================
-      tags$div(class = "sec", "3 · Effect of interest"),
+      tags$div(class = "sec", "4 · Effect of interest"),
       uiOutput("effect_inputs"),
       sliderInput("target_power", "Target power to plan for", 0.5, 0.99, 0.8, step = 0.05),
       helpText(style = "margin-top:-6px",
@@ -305,8 +324,13 @@ ui <- fluidPage(
       # the user came for could start below the fold. The result is now the
       # first thing in the column and is boxed, so the eye lands on it before
       # anything that is merely about it.
-      conditionalPanel("input.mode == 'examples'", uiOutput("gallery")),
-      conditionalPanel("input.mode != 'examples'",
+      # The examples are not a "view" of a design — they are a way of choosing
+      # one — so they no longer sit among the View options. They get their own
+      # state and their own entry point, and the View control keeps meaning
+      # exactly one thing: how to show the design you have.
+      uiOutput("examples_bar"),
+      conditionalPanel("output.js_examples === true", uiOutput("gallery")),
+      conditionalPanel("output.js_examples !== true",
       div(class = "resultcard",
         uiOutput("provenance"),
         conditionalPanel("input.mode == 'single'",
@@ -324,7 +348,7 @@ ui <- fluidPage(
         conditionalPanel("input.mode == 'curve'",
           uiOutput("curve_status"),
           plotOutput("curve", height = "400px"), tableOutput("curve_tbl"))
-      )),
+      ),
       uiOutput("send_back"),      # hand the planned N back to a linked SMAAT study
       uiOutput("intro"),          # #4 dismissible "why this tool exists"
       uiOutput("smaat_cta"),      # field this design with SMAAT — sits under the result
@@ -353,7 +377,7 @@ ui <- fluidPage(
           tags$dt("Convergence"), tags$dd("The share of simulated datasets the model could actually be fit to. Low convergence means the design is too sparse or unbalanced to estimate reliably."),
           tags$dt("Monte Carlo error (±)"), tags$dd("Uncertainty in the power estimate from using a finite number of simulated datasets. It shrinks as replications rise; the grid uses 2,000, so its estimates are tight."),
           tags$dt("Starved tail — P(<10 obs)"), tags$dd("The fraction of participants who answer fewer than ~10 times. Those people contribute little to a within-person effect.")))
-      ),
+      )),
       tags$hr(),
       tags$small(style = "color:#777",
         "Deterministic seeding; on a fixed schedule at full compliance the engine reduces to an ",
@@ -803,7 +827,7 @@ server <- function(input, output, session) {
   # arrived from a linked study. A plain smaat.eu link — the paper still cites the
   # neutral repo/DOI, so only the hosted app points at the platform.
   output$smaat_cta <- renderUI({
-    if (identical(input$mode, "examples")) return(NULL)   # the gallery owns this view
+    if (isTRUE(examples_open())) return(NULL)      # the gallery owns the column
     if (!is.null(return_url())) return(NULL)      # already inside a SMAAT flow
     if (!isTRUE(supported())) return(NULL)         # contextual: only with a result
     div(style = "margin:18px 0;padding:18px 20px;background:#eaf2fb;border:1px solid #cfe0f3;border-radius:10px",
@@ -828,7 +852,7 @@ server <- function(input, output, session) {
   # distinction matters — it is the paper's headline, and the two can differ by
   # 42 points — so it is restated here rather than dropped.
   output$power_def_ctl <- renderUI({
-    if (identical(input$mode, "examples")) return(NULL)
+    if (isTRUE(examples_open())) return(NULL)
     if (!isTRUE(supported()) && !identical(input$mode, "curve")) return(NULL)
     div(class = "powerdef",
       tags$span(class = "pdlabel", "Power counts non-convergence as:"),
@@ -985,6 +1009,27 @@ server <- function(input, output, session) {
            " \u00b7 effect ", format(e$eff))
   }
 
+  # Kept out of `mode` deliberately: mode is persisted in the share link and
+  # consumed by curve_tab(), provenance and the interpretation guards, and a
+  # third value that is not a way of viewing a design leaked into all of them.
+  examples_open <- reactiveVal(FALSE)
+  output$js_examples <- reactive(isTRUE(examples_open()))
+  outputOptions(output, "js_examples", suspendWhenHidden = FALSE)
+  observeEvent(input$open_examples,  examples_open(TRUE))
+  observeEvent(input$close_examples, examples_open(FALSE))
+  observeEvent(input$goto_examples,  examples_open(TRUE))
+
+  output$examples_bar <- renderUI({
+    if (isTRUE(examples_open()))
+      div(style = "margin-bottom:12px",
+        actionLink("close_examples", "\u2190 Back to the planner",
+                   style = "font-size:13px;font-weight:600"))
+    else
+      div(style = "text-align:right;margin-bottom:8px",
+        actionLink("open_examples", "Worked examples \u2192",
+                   style = "font-size:13px;font-weight:600"))
+  })
+
   output$gallery <- renderUI({
     card <- function(id, e) column(6, style = "margin-bottom:14px",
       div(class = "excard",
@@ -1010,6 +1055,7 @@ server <- function(input, output, session) {
     nm <- nm_
     observeEvent(input[[paste0("ex_", nm)]], {
       apply_example(EX[[nm]])
+      examples_open(FALSE)                     # leave the gallery
       updateRadioButtons(session, "mode", selected = "single")
     })
   })
