@@ -249,8 +249,9 @@ ui <- fluidPage(
       radioButtons("design_type", "How are prompts triggered?",
         c("Event or location — the count is random" = "poisson",
           "Fixed schedule — the count is planned"   = "fixed")),
-      radioButtons("mode", "View", c("Single design" = "single", "Power curve over N" = "curve"),
-                   inline = TRUE),
+      radioButtons("mode", "View",
+                   c("Single design" = "single", "Power curve over N" = "curve",
+                     "Examples" = "examples"), inline = TRUE),
       sliderInput("N", "Participants (N)", 10, 300, 60, step = 5),
       conditionalPanel("input.mode == 'curve'",
         sliderInput("Ncurve", "N range for the curve", 10, 300, c(20, 150), step = 10)),
@@ -304,6 +305,8 @@ ui <- fluidPage(
       # the user came for could start below the fold. The result is now the
       # first thing in the column and is boxed, so the eye lands on it before
       # anything that is merely about it.
+      conditionalPanel("input.mode == 'examples'", uiOutput("gallery")),
+      conditionalPanel("input.mode != 'examples'",
       div(class = "resultcard",
         uiOutput("provenance"),
         conditionalPanel("input.mode == 'single'",
@@ -321,7 +324,7 @@ ui <- fluidPage(
         conditionalPanel("input.mode == 'curve'",
           uiOutput("curve_status"),
           plotOutput("curve", height = "400px"), tableOutput("curve_tbl"))
-      ),
+      )),
       uiOutput("send_back"),      # hand the planned N back to a linked SMAAT study
       uiOutput("intro"),          # #4 dismissible "why this tool exists"
       uiOutput("smaat_cta"),      # field this design with SMAAT — sits under the result
@@ -534,12 +537,23 @@ server <- function(input, output, session) {
   # and fill the non-target effects from context controls (or sensible defaults).
   effect_betas <- function() {
     sp <- spec_now()
-    eff <- input$eff %||% 0.2
-    b_main  <- input$b_main  %||% 0.3    # L1 main effect when it is not the target
-    b_l2    <- input$b_l2    %||% 0.3    # L2 main effect when it is not the target
+    # Fall back to the values this partition was SIMULATED at, not to literals.
+    # These sliders live in a renderUI block, so they are briefly absent every
+    # time the panel swaps and their value is NULL until the client reports it.
+    # While that was true the fallbacks (0.3) disagreed with the sliders' own
+    # defaults (the slab's reference effect), so a moderation model asked for a
+    # context effect of 0.3 that was never simulated and the lookup refused —
+    # on first load, before the user had touched anything.
+    rf  <- ref_effect(model_id(), trigger_mode_now())
+    dfl <- function(field, fallback) if (is.null(rf)) fallback else rf[[field]]
+    eff     <- input$eff    %||% dfl("eff", 0.2)
+    b_main  <- input$b_main %||% dfl("b_main", 0.2)  # L1 main effect when not the target
+    b_l2    <- input$b_l2   %||% dfl("b_l2", 0.3)    # L2 main effect when not the target
     switch(sp$target,
       b10 = list(beta1 = eff,    beta_l2 = b_l2,  beta_cross = 0),
-      b01 = list(beta1 = 0.3,    beta_l2 = eff,   beta_cross = 0),
+      # beta1 is inert for a Level-2 main effect (the model has no momentary
+      # predictor), so it carries the reference value rather than a literal.
+      b01 = list(beta1 = b_main, beta_l2 = eff,   beta_cross = 0),
       b11 = list(beta1 = b_main, beta_l2 = b_l2,  beta_cross = eff))
   }
 
@@ -789,6 +803,7 @@ server <- function(input, output, session) {
   # arrived from a linked study. A plain smaat.eu link — the paper still cites the
   # neutral repo/DOI, so only the hosted app points at the platform.
   output$smaat_cta <- renderUI({
+    if (identical(input$mode, "examples")) return(NULL)   # the gallery owns this view
     if (!is.null(return_url())) return(NULL)      # already inside a SMAAT flow
     if (!isTRUE(supported())) return(NULL)         # contextual: only with a result
     div(style = "margin:18px 0;padding:18px 20px;background:#eaf2fb;border:1px solid #cfe0f3;border-radius:10px",
@@ -813,6 +828,7 @@ server <- function(input, output, session) {
   # distinction matters — it is the paper's headline, and the two can differ by
   # 42 points — so it is restated here rather than dropped.
   output$power_def_ctl <- renderUI({
+    if (identical(input$mode, "examples")) return(NULL)
     if (!isTRUE(supported()) && !identical(input$mode, "curve")) return(NULL)
     div(class = "powerdef",
       tags$span(class = "pdlabel", "Power counts non-convergence as:"),
@@ -830,12 +846,6 @@ server <- function(input, output, session) {
   observeEvent(input$dismiss_intro, intro_dismissed(TRUE))
   output$intro <- renderUI({
     if (isTRUE(intro_dismissed())) return(NULL)
-    excard <- function(id, title, body, foot) column(4,
-      div(class = "excard",
-        tags$div(style = "font-weight:600;font-size:13px", title),
-        tags$div(style = "font-size:12px;color:#555;margin:6px 0 10px;line-height:1.35", body),
-        tags$div(style = "font-size:11px;color:#888;margin-bottom:8px", foot),
-        actionButton(id, "Load this example", class = "btn btn-default btn-sm", width = "100%")))
     div(style = "margin-bottom:16px",
       div(style = "background:#eef4fb;border:1px solid #cfe0f3;border-radius:10px;padding:14px 16px",
         tags$div(style = "font-size:14px;line-height:1.45",
@@ -847,28 +857,14 @@ server <- function(input, output, session) {
           "and the number of participants you'd need."),
         tags$div(style = "text-align:right;margin-top:6px;font-size:13px",
           actionLink("dismiss_intro", "Dismiss this intro"))),
-      tags$div(style = "font-weight:600;font-size:13px;margin:14px 0 8px;color:#444",
-        "New here? Load a worked example and explore:"),
-      fluidRow(
-        excard("ex_typical",
-          "A two-week mood study",
-          paste0("Sixty undergraduates carry a phone for 14 days and answer about two prompts a day, at random ",
-                 "times. You want to know whether momentary stress predicts momentary negative affect, within a ",
-                 "person — and whether that link differs across people."),
-          "Within-person effect · N = 60 · 14 days · ~2/day · triggered"),
-        excard("ex_sparse",
-          "A sparse geofenced study",
-          paste0("A prompt fires only when a participant enters a bar. Some people go most evenings and answer ",
-                 "often; others rarely go and answer only two or three times. Does the location-triggered urge to ",
-                 "drink track their mood? Watch the starved tail and the convergence warning."),
-          "Within-person effect · N = 40 · 7 days · ~1/day · high between-person variability"),
-        excard("ex_ar",
-          "Emotional inertia in depression",
-          paste0("Ninety participants report their affect several times a day for two weeks. You are testing how ",
-                 "strongly negative affect carries over from one moment to the next — emotional inertia — and how ",
-                 "much that carry-over differs between people."),
-          "Autoregressive effect · N = 90 · 14 days · ~3/day")))
+      tags$div(style = "font-size:13px;margin-top:12px;color:#444",
+        "New here? ", actionLink("goto_examples", "Browse ten worked examples"),
+        " — each one fills the controls for a real study shape."))
   })
+
+  # The examples used to sit here, three of them, inline under the intro and so
+  # in the same column as the result. They now have a view of their own.
+  observeEvent(input$goto_examples, updateRadioButtons(session, "mode", selected = "examples"))
 
   # --- #5 traffic-lit stat tiles -------------------------------------------
   tile <- function(value, label, bg, border) column(3,
@@ -908,13 +904,115 @@ server <- function(input, output, session) {
     updateSliderInput(session, "lambda_bar", value = cfg$lambda)
     if (!is.null(cfg$cv)) updateSliderInput(session, "cv", value = cfg$cv)
   }
+  # Ten worked designs, each VERIFIED against the shipped grid by
+  # tests/app-examples.R — an example that cannot be answered is worse than no
+  # example, and two of the previous three could not be: they set an effect of
+  # 0.3 when only 0.1, 0.2 and 0.5 were ever simulated, so the flagship "load a
+  # worked example" landed a new user on a refusal. One of them also advertised
+  # "~3/day" at a rate the grid does not have, which silently snapped to 2.
+  #
+  # `eff` must therefore be the reference effect of that model's slab (each
+  # model powers a different coefficient, so the value differs by model), and
+  # the sampling levers must be simulated ones. The gallery spans the 0.8
+  # boundary on purpose — five designs below it and five above — because a
+  # gallery where everything succeeds teaches nothing about planning.
   EX <- list(
-    typical = list(model = 3, N = 60, D = 14, lambda = 2, cv = 0.3, eff = 0.3, grid = TRUE),
-    sparse  = list(model = 3, N = 40, D = 7,  lambda = 1, cv = 0.9, eff = 0.2, grid = TRUE),
-    ar      = list(model = 9, N = 90, D = 14, lambda = 3, cv = 0.3, eff = 0.3, grid = FALSE))
-  observeEvent(input$ex_typical,  apply_example(EX$typical))
-  observeEvent(input$ex_sparse,   apply_example(EX$sparse))
-  observeEvent(input$ex_ar,       apply_example(EX$ar))
+    mood = list(model = 3, N = 50, D = 14, lambda = 2, cv = 0.3, eff = 0.20,
+      title = "A two-week mood study",
+      body = paste0("Fifty undergraduates carry a phone for two weeks and answer about two prompts a ",
+                    "day at random times. Does momentary stress predict momentary negative affect ",
+                    "within a person, and does that link differ between people?")),
+    geofence = list(model = 3, N = 40, D = 7, lambda = 1, cv = 0.9, eff = 0.20,
+      title = "A sparse geofenced study",
+      body = paste0("A prompt fires only when someone enters a bar. Some go most evenings; others ",
+                    "rarely go and answer two or three times in the week. Watch the starved tail and ",
+                    "the convergence warning — this is the case ordinary power tools cannot express.")),
+    beeper = list(model = 3, N = 25, D = 7, lambda = 5, cv = 0, eff = 0.20, design = "fixed",
+      title = "A classic beeper study",
+      body = paste0("Twenty-five people are signalled five times a day for a week on a fixed ",
+                    "schedule. The count is planned rather than triggered, so only compliance ",
+                    "thins it — and it lands just under the usual 80% target.")),
+    burst = list(model = 3, N = 30, D = 3, lambda = 6, cv = 0, eff = 0.20, design = "fixed",
+      title = "A three-day measurement burst",
+      body = paste0("A short, intensive burst: thirty people, six prompts a day, three days. Bursts ",
+                    "buy observations quickly but give the model few days per person to work with.")),
+    inertia = list(model = 9, N = 40, D = 7, lambda = 2, cv = 0.3, eff = 0.20,
+      title = "Emotional inertia",
+      body = paste0("Forty people report their affect about twice a day for a week. How strongly ",
+                    "does negative affect carry over from one moment to the next, and how much does ",
+                    "that carry-over differ between people?")),
+    clinical = list(model = 1, N = 80, D = 14, lambda = 2, cv = 0.3, eff = 0.60,
+      title = "A clinical group difference",
+      body = paste0("Eighty participants, half with a depression diagnosis and half controls, report ",
+                    "affect twice a day for two weeks. Do the two groups differ in their average ",
+                    "level of negative affect?")),
+    trait = list(model = 2, N = 100, D = 14, lambda = 2, cv = 0.3, eff = 0.30,
+      title = "A trait predictor of average mood",
+      body = paste0("A hundred participants complete a baseline questionnaire, then report affect ",
+                    "twice a day for two weeks. Does the baseline score predict a person's average ",
+                    "momentary affect?")),
+    modgroup = list(model = 5, N = 80, D = 14, lambda = 2, cv = 0.3, eff = 0.20,
+      title = "Does the effect differ by group?",
+      body = paste0("The same two-week design, now asking whether the stress-to-affect link is ",
+                    "stronger in the clinical group. A cross-level interaction is far more expensive ",
+                    "than the main effect it moderates — this design is well short of 80%.")),
+    modcont = list(model = 7, N = 150, D = 28, lambda = 4, cv = 0.3, eff = 0.10,
+      title = "Moderation by a continuous trait",
+      body = paste0("Does baseline severity strengthen the within-person stress-to-affect link? ",
+                    "Detecting a small interaction takes the largest design in the grid: 150 people, ",
+                    "four weeks, four prompts a day.")),
+    inertgrp = list(model = 10, N = 120, D = 21, lambda = 4, cv = 0.3, eff = 0.20,
+      title = "Is inertia stronger in depression?",
+      body = paste0("A hundred and twenty participants, three weeks, four prompts a day, testing ",
+                    "whether the moment-to-moment carry-over of negative affect differs between a ",
+                    "clinical group and controls."))
+  )
+
+  # The strap line under each card is DERIVED from the configuration rather than
+  # written by hand, so a card can no longer describe a design the button does
+  # not load — which is exactly how the old "~3/day" claim survived.
+  ex_strap <- function(e) {
+    sp <- model_spec(e$model)
+    lbl <- switch(sp$target,
+      b10 = if (sp$l1 == "lag") "Carry-over effect" else "Within-person effect",
+      b01 = if (sp$l2 == "dummy") "Group difference" else "Person-level effect",
+      b11 = "Moderation (interaction)")
+    sched <- if (identical(e$design %||% "poisson", "fixed"))
+      sprintf("%g/day planned", e$lambda) else sprintf("~%g/day triggered", e$lambda)
+    cvs <- if (identical(e$design %||% "poisson", "fixed")) NULL
+           else sprintf(" \u00b7 CV %g", e$cv)
+    paste0(lbl, " \u00b7 N = ", e$N, " \u00b7 ", e$D, " days \u00b7 ", sched, cvs,
+           " \u00b7 effect ", format(e$eff))
+  }
+
+  output$gallery <- renderUI({
+    card <- function(id, e) column(6, style = "margin-bottom:14px",
+      div(class = "excard",
+        tags$div(style = "font-weight:600;font-size:13.5px", e$title),
+        tags$div(style = "font-size:12px;color:#555;margin:6px 0 10px;line-height:1.4", e$body),
+        tags$div(style = "font-size:11px;color:#888;margin-bottom:8px", ex_strap(e)),
+        actionButton(id, "Load this design", class = "btn btn-default btn-sm", width = "100%")))
+    ids <- names(EX)
+    rows <- split(ids, ceiling(seq_along(ids) / 2))
+    tagList(
+      tags$h4(style = "margin:2px 0 4px", "Worked examples"),
+      tags$p(style = "color:#555;font-size:13px;margin-bottom:14px",
+        "Ten designs drawn from real study shapes. Loading one fills every control on the left and ",
+        "switches to the single-design view, so you can see the result and then change it. ",
+        "Each is answered from the precomputed grid, and they deliberately span the 80% mark \u2014 ",
+        "about half fall short of it."),
+      lapply(rows, function(r) fluidRow(lapply(r, function(i) card(paste0("ex_", i), EX[[i]])))))
+  })
+
+  # One observer per example. local() captures the id — without it every button
+  # would close over the last value of the loop variable and load the same design.
+  for (nm_ in names(EX)) local({
+    nm <- nm_
+    observeEvent(input[[paste0("ex_", nm)]], {
+      apply_example(EX[[nm]])
+      updateRadioButtons(session, "mode", selected = "single")
+    })
+  })
 
   # --- #6 share this design (URL) + how to cite ----------------------------
   design_query <- reactive({
@@ -955,8 +1053,9 @@ server <- function(input, output, session) {
   output$provenance <- renderUI({
     # The badge describes a SINGLE-design estimate; in curve view the curve panel
     # shows its own status, so rendering here too would double the "Ready to
-    # simulate" line. Single view only.
-    if (identical(input$mode, "curve")) return(NULL)
+    # simulate" line. Single view only — and the examples gallery has no
+    # estimate of its own to describe.
+    if (!identical(input$mode, "single")) return(NULL)
     r <- estimate()
     # R comes from the answering ROW, never a literal: the study grid ran at
     # R = 2000 and the tool-support slabs at R = 1000, so a hardcoded badge would
@@ -1007,7 +1106,7 @@ server <- function(input, output, session) {
     # These now live in a tab rather than inside the single-design panel, so the
     # client no longer hides them in curve view. Guard on the server instead, or
     # a stale reading of one design would sit under a curve of another.
-    if (identical(input$mode, "curve")) return(NULL)
+    if (!identical(input$mode, "single")) return(NULL)
     r <- estimate(); if (!supported()) return(NULL)
     p <- pw()
     warn <- if (r$conv_rate < 0.99) tags$li(style = "color:#c0392b", sprintf(
@@ -1035,7 +1134,7 @@ server <- function(input, output, session) {
     # These now live in a tab rather than inside the single-design panel, so the
     # client no longer hides them in curve view. Guard on the server instead, or
     # a stale reading of one design would sit under a curve of another.
-    if (identical(input$mode, "curve")) return(NULL)
+    if (!identical(input$mode, "single")) return(NULL)
     r <- estimate(); if (!supported()) return(NULL)
     tags$small(tags$ul(
       tags$li(sprintf("Source: %s%s", r$source,
