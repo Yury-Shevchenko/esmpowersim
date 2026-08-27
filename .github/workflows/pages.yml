@@ -71,6 +71,7 @@ jobs:
       - run: Rscript tests/app-fixed.R
       - run: Rscript tests/app-roundtrip.R
       - run: Rscript tests/app-grid-snap.R
+      - run: Rscript tests/app-layout.R
 
   build:
     needs: [reproducibility, lookup]

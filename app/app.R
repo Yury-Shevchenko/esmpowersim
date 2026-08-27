@@ -184,6 +184,22 @@ ui <- fluidPage(
     .sec { font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:#8a97a3;
       font-weight:700; margin:14px 0 6px; }
     .excard { border:1px solid #cfe0f3; border-radius:10px; padding:12px; background:#fff; height:100%; }
+    /* --- the result, boxed so it reads as the answer rather than as the first
+           of fifteen equally-weighted blocks --- */
+    .resultcard { border:1px solid #d4dde4; border-radius:12px; padding:16px 18px 6px;
+      background:#fff; box-shadow:0 1px 3px rgba(16,42,67,.06); margin-bottom:16px; }
+    /* --- power definition: a display toggle, kept compact and out of the way
+           of the tiles it used to split --- */
+    .powerdef { border-top:1px solid #eef2f5; margin-top:10px; padding-top:8px; }
+    .powerdef .pdlabel { font-size:12px; font-weight:600; color:#5a6b7a;
+      text-transform:uppercase; letter-spacing:.04em; margin-right:10px; }
+    .powerdef .shiny-input-container { display:inline-block; margin:0; width:auto; vertical-align:middle; }
+    .powerdef .radio-inline { font-size:13px; margin-right:12px; }
+    .powerdef .pdhelp { display:block; font-size:11.5px; color:#8a97a3; margin-top:4px; line-height:1.35; }
+    /* --- the tab strip carries the secondary content; keep it quieter than
+           the result above it --- */
+    .nav-tabs > li > a { font-size:13px; color:#5a6b7a; }
+    .nav-tabs > li.active > a { font-weight:600; color:#1b3a5b; }
     "))),
   tags$div(style = "padding:2px 0 6px",
     tags$h2(style = "margin:0;font-weight:700", "Experience-Sampling Power Planner"),
@@ -282,39 +298,59 @@ ui <- fluidPage(
     ),
     mainPanel(
       width = 8,
-      uiOutput("intro"),          # #4 dismissible "why this tool exists"
-      uiOutput("provenance"),
-      uiOutput("send_back"),      # hand the planned N back to a linked SMAAT study
-      conditionalPanel("input.mode == 'single'",
-        uiOutput("verdict"),
-        uiOutput("tiles"),        # #5 traffic-lit stat tiles
-        radioButtons("power_def", NULL, inline = TRUE,
-          c("Counting non-convergence as no detection (lower bound)" = "all",
-            "Given the model converged (upper bound)"                = "converged")),
-        plotOutput("hist", height = "280px"),
-        uiOutput("interpretation"),
-        uiOutput("howto")
+      # ===== THE ANSWER, first =============================================
+      # Everything explanatory used to sit above this: the intro banner, the
+      # provenance badge and the SMAAT hand-off, so on a fresh load the number
+      # the user came for could start below the fold. The result is now the
+      # first thing in the column and is boxed, so the eye lands on it before
+      # anything that is merely about it.
+      div(class = "resultcard",
+        uiOutput("provenance"),
+        conditionalPanel("input.mode == 'single'",
+          uiOutput("verdict"),
+          uiOutput("tiles")),      # #5 traffic-lit stat tiles
+        # The power definition is a DISPLAY toggle over both views, not an
+        # output: it used to sit between the tiles and the histogram, splitting
+        # the result in half with two 60-character labels. It also only existed
+        # inside the single-design panel, while the power CURVE reads the same
+        # input for its y axis — so in curve mode the definition was in force
+        # but invisible and unchangeable. One compact control, rendered in both.
+        uiOutput("power_def_ctl"),
+        conditionalPanel("input.mode == 'single'",
+          plotOutput("hist", height = "280px")),
+        conditionalPanel("input.mode == 'curve'",
+          uiOutput("curve_status"),
+          plotOutput("curve", height = "400px"), tableOutput("curve_tbl"))
       ),
-      conditionalPanel("input.mode == 'curve'",
-        uiOutput("curve_status"),
-        plotOutput("curve", height = "400px"), tableOutput("curve_tbl")),
+      uiOutput("send_back"),      # hand the planned N back to a linked SMAAT study
+      uiOutput("intro"),          # #4 dismissible "why this tool exists"
       uiOutput("smaat_cta"),      # field this design with SMAAT — sits under the result
-      tags$hr(),
-      # #6 / #7 — share, cite, glossary
-      tags$details(tags$summary(tags$b("Share or cite this design")),
-        div(style = "margin-top:8px",
-          tags$p(style = "font-size:13px;margin-bottom:4px", "Link to this exact design:"),
-          uiOutput("share_link"),
-          tags$p(style = "font-size:13px;margin:12px 0 4px", "How to cite:"),
-          uiOutput("cite_text"))),
-      tags$details(tags$summary(tags$b("Glossary — the terms used here")),
-        tags$dl(style = "font-size:13px;margin-top:8px",
+
+      # ===== everything about the answer, one at a time =====================
+      # Four blocks that all used to render at once, at the same visual weight
+      # as the estimate itself. Deliberately NO id on the tabset: without one,
+      # tab state is pure client-side Bootstrap and never round-trips to the
+      # server — the failure mode that makes selectize unreliable under
+      # shinylive does not apply.
+      tabsetPanel(
+        type = "tabs",
+        tabPanel("Reading this result", div(style = "padding-top:12px", uiOutput("interpretation"))),
+        tabPanel("How it was computed", div(style = "padding-top:12px", uiOutput("howto"))),
+        tabPanel("Share or cite",
+          div(style = "padding-top:12px",
+            tags$p(style = "font-size:13px;margin-bottom:4px", "Link to this exact design:"),
+            uiOutput("share_link"),
+            tags$p(style = "font-size:13px;margin:12px 0 4px", "How to cite:"),
+            uiOutput("cite_text"))),
+        tabPanel("Glossary",
+          tags$dl(style = "font-size:13px;margin-top:12px",
           tags$dt("Within-person effect"), tags$dd("How strongly a momentary predictor tracks the momentary outcome inside one person, averaged over people."),
           tags$dt("Between-person variability in trigger rate (CV)"), tags$dd("How much people differ in how often they get triggered. CV = 0 means everyone the same; high CV means some people rarely trigger — the case no other power tool models."),
           tags$dt("Carry-over / AR(1)"), tags$dd("How much a moment persists into the next (e.g. emotional inertia)."),
           tags$dt("Convergence"), tags$dd("The share of simulated datasets the model could actually be fit to. Low convergence means the design is too sparse or unbalanced to estimate reliably."),
           tags$dt("Monte Carlo error (±)"), tags$dd("Uncertainty in the power estimate from using a finite number of simulated datasets. It shrinks as replications rise; the grid uses 2,000, so its estimates are tight."),
-          tags$dt("Starved tail — P(<10 obs)"), tags$dd("The fraction of participants who answer fewer than ~10 times. Those people contribute little to a within-person effect."))),
+          tags$dt("Starved tail — P(<10 obs)"), tags$dd("The fraction of participants who answer fewer than ~10 times. Those people contribute little to a within-person effect.")))
+      ),
       tags$hr(),
       tags$small(style = "color:#777",
         "Deterministic seeding; on a fixed schedule at full compliance the engine reduces to an ",
@@ -769,6 +805,26 @@ server <- function(input, output, session) {
                "Explore SMAAT →"))
   })
 
+  # --- the power-definition toggle -----------------------------------------
+  # Same input id and the same two values, so every consumer (pw(), curve_y())
+  # and the deep-link keep working untouched. What changes is the presentation:
+  # short labels on one line instead of two sentence-length ones, with the
+  # distinction spelled out beneath rather than inside the option text. The
+  # distinction matters — it is the paper's headline, and the two can differ by
+  # 42 points — so it is restated here rather than dropped.
+  output$power_def_ctl <- renderUI({
+    if (!isTRUE(supported()) && !identical(input$mode, "curve")) return(NULL)
+    div(class = "powerdef",
+      tags$span(class = "pdlabel", "Power counts non-convergence as:"),
+      radioButtons("power_def", NULL, inline = TRUE,
+        c("a failure to detect (lower bound)" = "all",
+          "excluded (upper bound)"            = "converged"),
+        selected = isolate(input$power_def) %||% "all"),
+      tags$span(class = "pdhelp",
+        "A model that does not converge yields no estimate. The lower bound is the honest ",
+        "planning number; the two can differ by tens of points on sparse designs."))
+  })
+
   # --- #4 dismissible intro: why this tool exists --------------------------
   intro_dismissed <- reactiveVal(FALSE)
   observeEvent(input$dismiss_intro, intro_dismissed(TRUE))
@@ -948,6 +1004,10 @@ server <- function(input, output, session) {
   })
 
   output$interpretation <- renderUI({
+    # These now live in a tab rather than inside the single-design panel, so the
+    # client no longer hides them in curve view. Guard on the server instead, or
+    # a stale reading of one design would sit under a curve of another.
+    if (identical(input$mode, "curve")) return(NULL)
     r <- estimate(); if (!supported()) return(NULL)
     p <- pw()
     warn <- if (r$conv_rate < 0.99) tags$li(style = "color:#c0392b", sprintf(
@@ -972,15 +1032,19 @@ server <- function(input, output, session) {
 
   # --- every number must trace back to a row -------------------------------
   output$howto <- renderUI({
+    # These now live in a tab rather than inside the single-design panel, so the
+    # client no longer hides them in curve view. Guard on the server instead, or
+    # a stale reading of one design would sit under a curve of another.
+    if (identical(input$mode, "curve")) return(NULL)
     r <- estimate(); if (!supported()) return(NULL)
-    tags$details(tags$summary("How was this computed?"), tags$small(tags$ul(
+    tags$small(tags$ul(
       tags$li(sprintf("Source: %s%s", r$source,
                       if (!is.na(r$source_grid)) paste0(" (", r$source_grid, " slab)") else "")),
       if (!is.na(r$source_rows)) tags$li(sprintf("Grid row(s) %s of grid.csv", r$source_rows)),
       tags$li(sprintf("Replications: %s · master seed 20260709", r$R_total)),
       if (identical(r$source, "grid_interp"))
         tags$li(sprintf("Interpolated linearly on the empirical logit over %s, between %d bracketing cells.",
-                        r$interp_dims, r$n_corners)))))
+                        r$interp_dims, r$n_corners))))
   })
 
   # --- lever badges: show which control took you off the grid ---------------
